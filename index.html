@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Comet Simulation</title>
+  <style>
+    #cometButtons button {
+  background-color: #444;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#cometButtons button:hover {
+  background-color: #666;
+}
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      background-color: black;
+    }
+
+    #renderCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #uiOverlay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      color: white;
+      font-family: sans-serif;
+      background-color: rgba(0, 0, 0, 0.6);
+      padding: 12px;
+      border-radius: 8px;
+      max-width: 300px;
+    }
+
+    #uiOverlay label {
+      display: block;
+      margin-top: 6px;
+      font-size: 14px;
+    }
+
+    #uiOverlay input[type="range"],
+    #uiOverlay input[type="number"],
+    #uiOverlay input[type="text"] {
+      width: 100%;
+      margin-bottom: 6px;
+    }
+
+    button {
+      margin-top: 10px;
+      padding: 6px 12px;
+      font-size: 14px;
+      background-color: #444;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    button:hover {
+      background-color: #666;
+    }
+
+    .comet-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .comet-buttons button {
+      width: auto;
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="homeScreen" style="
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #000814;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+  color: white;
+  font-family: Arial, sans-serif;
+">
+  <h1 style="font-size: 64px; margin: 0;">Comet Simulator</h1>
+  <button id="startBtn" style="
+    margin-top: 30px;
+    padding: 15px 40px;
+    font-size: 24px;
+    background-color: #1d3557;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  ">Click to start</button>
+
+  <!-- lādējas -->
+  <div id="loadingSpinner" style="
+    margin-top: 30px;
+    border: 6px solid #ccc;
+    border-top: 6px solid #1d3557;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    display: none;
+  "></div>
+</div>
+
+<canvas id="renderCanvas"></canvas>
+
+<div id="simTimeDisplay" style="
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: white;
+  font-size: 28px;
+  font-weight: bold;
+  z-index: 1000;
+  font-family: sans-serif;
+  text-shadow: 0 0 5px black;
+">
+  Time: --
+  
+</div>
+
+<style>
+#timelineWrapper {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 10px 20px;
+  font-family: sans-serif;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#topRow {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 15px;
+  padding-left: 10px;
+}
+
+#timelineLabel {
+  font-weight: bold;
+  color: white;
+  font-size: 1.2em;
+}
+
+#timelineSlider {
+  width: 95%;
+  cursor: pointer;
+}
+
+</style>
+
+<div id="timelineWrapper">
+  <div id="topRow">
+    <div id="timelineLabel">Date: 2000-01-01</div>
+  </div>
+  <input type="range" id="timelineSlider" min="-36525" max="36525" value="0" step="1" disabled />
+</div>
+
+
+  <!-- kontrole -->
+  <div id="uiOverlay">
+
+    <label for="eccentricityInput">Eccentricity (e):</label>
+    <input type="number" id="eccentricityInput" step="0.0001" min="0" max="1" value="0.64090813" />
+
+    <label for="perihelionInput">Perihelion Distance (AU):</label>
+    <input type="number" id="perihelionInput" step="0.0001" min="0.1" value="1.24326564" />
+
+    <label for="inclinationInput">Inclination (°):</label>
+    <input type="number" id="inclinationInput" step="0.01" value="7.04029491" />
+
+    <label for="longitudeAscendingNodeInput">Longitude of Ascending Node (Ω, °):</label>
+    <input type="number" id="longitudeAscendingNodeInput" step="0.01" value="50.135573804414" />
+
+    <label for="argumentPerihelionInput">Argument of Perihelion (ω, °):</label>
+    <input type="number" id="argumentPerihelionInput" step="0.01" value="12.798249734157" />
+
+    <label for="perihelionDateInput">Perihelion Date:</label>
+    <input type="number" id="perihelionDateInput" step="0.1" value="2457247.5887" />
+
+    <label for="betaMinInput">Beta Minimum (0–1):</label>
+    <input id="betaMinInput" type="number" step="0.001" min="0" max="1" value="0.01" />
+
+    <label for="betaMaxInput">Beta Maximum (0–1):</label>
+    <input id="betaMaxInput" type="number" step="0.001" min="0" max="1" value="0.99" />
+
+    <label for="betaSkewInput">Beta Skewness (-5 to 5):</label>
+    <input id="betaSkewInput" type="number" step="0.1" min="-5" max="5" value="0" />
+    
+    <label for="particleLifetimeInput">Particle Lifetime:</label>
+    <input type="number" id="particleLifetimeInput" step="100" min="1000" value="400" />
+
+    <!-- <label for="particleSizeInput">Particle Size:</label>
+    <input type="number" id="particleSizeInput" step="0.01" min="0.01" value="0.12" /> -->
+
+    <label>
+      Activity exponent n (Q = k / r^n):
+      <input id="activityExponentInput" type="number" step="0.1" min="0" max="6" value="4">
+    </label>
+    <label>
+      Activity scale k @ 1 AU:
+      <input id="activityScaleInput" type="number" step="0.1" min="0" value="1">
+    </label>
+
+    <label for="particleCountInput">Particle Count (per sec):</label>
+    <input type="number" id="particleCountInput" step="1" min="1" max="3000" value="100" />
+
+    <label for="velocitySlider">Simulation speed: <span id="velocityValue">1</span></label>
+    <input type="range" id="velocitySlider" min="0" max="100" value="0" step="1">
+
+<div id="orbitControls" style="
+  position: absolute;
+  top: 650px;  /* adjust as needed */
+  right: 65px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: sans-serif;
+">
+</div>
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 2px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " id="toggleOrbitBtn">Toggle Orbit</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " id="toggleFocusBtn">Focus on Comet</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " id="updateViewBtn" disabled>Update Position</button>
+
+</div>
+  </div>
+
+<div id="statusContainer" style="
+  position: fixed;
+  top: 10px;       /* above the pause button (pause is at 50px) */
+  right: 25px;
+  z-index: 1001;   /* slightly above pause container */
+  font-family: sans-serif;
+">
+  <div id="gpuStatus" style="
+    font-size:12px;
+    padding:4px 6px;
+    border-radius:4px;
+    background:#222;
+    color:#eee;
+    border:1px solid #555;
+    opacity:0.9;
+    display:inline-block;
+  ">GPU: —</div>
+</div>
+
+<!-- pauzes poga -->
+<div id="pauseContainer" style="
+  position: fixed;
+  top: 110px;
+  right: 25px;
+  z-index: 1000;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-family: sans-serif;
+">
+  <button id="pauseBtn" style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 8px 16px;
+    font-size: 16px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  ">Pause</button>
+</div>
+
+<!-- ašu kontrole -->
+<div id="axisControl" style="
+  position: fixed;
+  top: 170px;       /* 70px below pause button */
+  right: 20px;
+  z-index: 15;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: row;   /* horizontal layout */
+  gap: 10px;             /* space between buttons */
+  font-family: sans-serif;
+  background: transparent; /* no background */
+  width: max-content;    /* container width fits buttons */
+">
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="setViewAxis('X')">X</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="setViewAxis('Y')">Y</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="setViewAxis('Z')">Z</button>
+</div>
+
+<!-- komētu pogas -->
+<div id="cometButtons" style="
+  position: fixed;
+  top: 220px;       /* 80px below axis control */
+  right: 30px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  font-family: sans-serif;
+  background: transparent; /* no background */
+">
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="loadComet('67P')">67P</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="loadComet('P5')">P/2013 P5</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="loadComet('HB')">Hale-Bopp</button>
+
+  <!-- <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " onclick="loadComet('F3')">C/2020 F3</button> -->
+</div>
+
+<div id="particleCounter" style="
+  position: fixed;
+  bottom: 110px;
+  right: 20px;
+  z-index: 1001;
+  font-family: monospace, sans-serif;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(0,0,0,0.6);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #fff;
+">
+  Particles: --
+</div>
+
+<div id="fpsCounter" style="
+  position: fixed;
+  bottom: 70px;
+  right: 20px;
+  z-index: 1001;
+  font-family: monospace, sans-serif;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(0,0,0,0.6);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #fff;
+">
+  FPS: --
+</div>
+
+<style>
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+</style>
+
+  <!-- Babylon.js bibliotēkas -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <script src="https://cdn.babylonjs.com/webgpu/babylon.webgpu.min.js"></script>
+
+  <!-- main fails -->
+  <script src="./main.patched.js"></script>
+
+  <!-- sagatavoto komētu parametri -->
+<script>
+  function loadComet(id) {
+    const comets = {
+      "67P": { e: 0.64090813, q: 1.24326564, i: 7.04029491, omega: 50.135573804414, w: 12.798249734157, T: 2457247.5887 },
+      "P5":  { e: 0.115481,   q: 1.935962,   i: 4.9713,     omega: 279.1686,       w: 144.2953,        T: 2460311.3955 },
+      "HB":  { e: 0.99498100, q: 0.89053766, i: 89.28759425,omega: 282.73342139616, w: 130.41466706592, T: 3313816.6384 },
+      "F3":  { e: 1.00429114, q: 5.19058156, i: 145.96152716,omega:109.45386615792, w: 265.53477830931, T: 2460709.2112 }
+    };
+    const c = comets[id];
+    const baseJD = 2451544.5;
+
+    if (!c) return;
+
+    document.getElementById('eccentricityInput').value = c.e;
+    document.getElementById('perihelionInput').value = c.q;
+    document.getElementById('inclinationInput').value = c.i;
+    document.getElementById('longitudeAscendingNodeInput').value = c.omega;
+    document.getElementById('argumentPerihelionInput').value = c.w;
+    document.getElementById('perihelionDateInput').value = c.T;
+
+    window.updateOrbitParameters?.();
+
+    simulationTimeJD = c.T;
+    timelineSlider.value = Math.floor(simulationTimeJD - baseJD);
+    // timelineLabel.textContent = `Date: ${jdToDateString(simulationTimeJD)}`;
+
+    // const cometPos = getCometState(getTimeSincePerihelionJD(simulationTimeJD));
+    // comet.position.copyFrom(cometPos);
+    // const earthPosNow = getEarthPosition(simulationTimeJD);
+    // earthMesh.position.copyFrom(earthPosNow);
+    // updateTimeDisplay(simulationTimeJD);
+
+    // tailParticles.length = 0;
+    // for (let i = 0; i < particleMeshes.length; i++) particleMeshes[i].setEnabled(false);
+  }
+</script>
+  <script>
+  document.getElementById("startBtn").addEventListener("click", () => {
+    const spinner = document.getElementById("loadingSpinner");
+    spinner.style.display = "block"; // loading spineris
+
+    setTimeout(() => {
+      document.getElementById("homeScreen").style.display = "none";
+      startSimulation();
+    }, 300); //īss brītiņs, lai parādītu loading spineri
+  });
+</script>
+</body>
+</html>
