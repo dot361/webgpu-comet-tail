@@ -119,7 +119,6 @@
     cursor: pointer;
   ">Click to start</button>
 
-  <!-- lādējas -->
   <div id="loadingSpinner" style="
     margin-top: 30px;
     border: 6px solid #ccc;
@@ -193,12 +192,10 @@
   <input type="range" id="timelineSlider" min="-36525" max="36525" value="0" step="1" disabled />
 </div>
 
-
-  <!-- kontrole -->
   <div id="uiOverlay">
 
     <label for="eccentricityInput">Eccentricity (e):</label>
-    <input type="number" id="eccentricityInput" step="0.0001" min="0" max="1" value="0.64090813" />
+    <input type="number" id="eccentricityInput" step="0.0001" min="0" max="10" value="0.64090813" />
 
     <label for="perihelionInput">Perihelion Distance (AU):</label>
     <input type="number" id="perihelionInput" step="0.0001" min="0.1" value="1.24326564" />
@@ -227,9 +224,6 @@
     <label for="particleLifetimeInput">Particle Lifetime:</label>
     <input type="number" id="particleLifetimeInput" step="100" min="1000" value="400" />
 
-    <!-- <label for="particleSizeInput">Particle Size:</label>
-    <input type="number" id="particleSizeInput" step="0.01" min="0.01" value="0.12" /> -->
-
     <label>
       Activity exponent n (Q = k / r^n):
       <input id="activityExponentInput" type="number" step="0.1" min="0" max="6" value="4">
@@ -247,7 +241,7 @@
 
 <div id="orbitControls" style="
   position: absolute;
-  top: 650px;  /* adjust as needed */
+  top: 650px;
   right: 65px;
   z-index: 15;
   display: flex;
@@ -291,9 +285,9 @@
 
 <div id="statusContainer" style="
   position: fixed;
-  top: 10px;       /* above the pause button (pause is at 50px) */
+  top: 10px;
   right: 25px;
-  z-index: 1001;   /* slightly above pause container */
+  z-index: 1001;
   font-family: sans-serif;
 ">
   <div id="gpuStatus" style="
@@ -308,7 +302,6 @@
   ">GPU: —</div>
 </div>
 
-<!-- pauzes poga -->
 <div id="pauseContainer" style="
   position: fixed;
   top: 110px;
@@ -330,20 +323,19 @@
   ">Pause</button>
 </div>
 
-<!-- ašu kontrole -->
 <div id="axisControl" style="
   position: fixed;
-  top: 170px;       /* 70px below pause button */
+  top: 170px;
   right: 20px;
   z-index: 15;
   padding: 6px;
   border-radius: 6px;
   display: flex;
-  flex-direction: row;   /* horizontal layout */
-  gap: 10px;             /* space between buttons */
+  flex-direction: row;
+  gap: 10px;
   font-family: sans-serif;
-  background: transparent; /* no background */
-  width: max-content;    /* container width fits buttons */
+  background: transparent;
+  width: max-content;
 ">
   <button style="
     background: none;
@@ -376,10 +368,9 @@
   " onclick="setViewAxis('Z')">Z</button>
 </div>
 
-<!-- komētu pogas -->
 <div id="cometButtons" style="
   position: fixed;
-  top: 220px;       /* 80px below axis control */
+  top: 220px;
   right: 30px;
   z-index: 15;
   display: flex;
@@ -388,7 +379,7 @@
   padding: 8px;
   border-radius: 6px;
   font-family: sans-serif;
-  background: transparent; /* no background */
+  background: transparent;
 ">
   <button style="
     background: none;
@@ -408,7 +399,7 @@
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
-  " onclick="loadComet('P5')">P/2013 P5</button>
+  " onclick="loadComet('C2024E1')">C/2024 E1</button>
 
   <button style="
     background: none;
@@ -418,9 +409,9 @@
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
-  " onclick="loadComet('HB')">Hale-Bopp</button>
+  " onclick="loadComet('133P')">133P</button>
 
-  <!-- <button style="
+  <button style="
     background: none;
     border: 1.5px solid #ccc;
     color: #eee;
@@ -428,7 +419,7 @@
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
-  " onclick="loadComet('F3')">C/2020 F3</button> -->
+  " onclick="loadComet('3I')">3I/ATLAS</button>
 </div>
 
 <div id="particleCounter" style="
@@ -470,27 +461,56 @@
 }
 </style>
 
-  <!-- Babylon.js bibliotēkas -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
   <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
   <script src="https://cdn.babylonjs.com/webgpu/babylon.webgpu.min.js"></script>
 
-  <!-- main fails -->
-  <script src="./main.patched.js"></script>
+  <script src="./main.js"></script>
 
-  <!-- sagatavoto komētu parametri -->
 <script>
   function loadComet(id) {
+
     const comets = {
-      "67P": { e: 0.64090813, q: 1.24326564, i: 7.04029491, omega: 50.135573804414, w: 12.798249734157, T: 2457247.5887 },
-      "P5":  { e: 0.115481,   q: 1.935962,   i: 4.9713,     omega: 279.1686,       w: 144.2953,        T: 2460311.3955 },
-      "HB":  { e: 0.99498100, q: 0.89053766, i: 89.28759425,omega: 282.73342139616, w: 130.41466706592, T: 3313816.6384 },
-      "F3":  { e: 1.00429114, q: 5.19058156, i: 145.96152716,omega:109.45386615792, w: 265.53477830931, T: 2460709.2112 }
+      "67P": {
+        e: 0.64090813,
+        q: 1.24326564,
+        i: 7.04029491,
+        omega: 50.135573804414,
+        w: 12.798249734157,
+        T: 2457247.5887
+      },
+
+      "C2024E1": {
+        e: 1.00048372,
+        q: 0.56171583,
+        i: 75.21807230,
+        omega: 108.38859762573,
+        w: 243.65164937935,
+        T: 2461060.9651
+      },
+
+      "133P": {
+        e: 0.15637284,
+        q: 2.67049635,
+        i: 1.38981783,
+        omega: 160.09954075742,
+        w: 131.90192411846,
+        T: 2460440.7000
+      },
+
+      "3I": {
+        e: 6.13941774,
+        q: 1.35638454,
+        i: 175.11310480,
+        omega: 322.15684249105,
+        w: 128.01051366675,
+        T: 2460977.9814
+      }
     };
+
     const c = comets[id];
     const baseJD = 2451544.5;
-
     if (!c) return;
 
     document.getElementById('eccentricityInput').value = c.e;
@@ -500,31 +520,27 @@
     document.getElementById('argumentPerihelionInput').value = c.w;
     document.getElementById('perihelionDateInput').value = c.T;
 
-    window.updateOrbitParameters?.();
+window.updateOrbitParameters?.();
 
-    simulationTimeJD = c.T;
-    timelineSlider.value = Math.floor(simulationTimeJD - baseJD);
-    // timelineLabel.textContent = `Date: ${jdToDateString(simulationTimeJD)}`;
+const daysBeforeT = 400; // closer to T? lower this (e.g., 2 or 1)
+const jdStart = c.T - daysBeforeT;
 
-    // const cometPos = getCometState(getTimeSincePerihelionJD(simulationTimeJD));
-    // comet.position.copyFrom(cometPos);
-    // const earthPosNow = getEarthPosition(simulationTimeJD);
-    // earthMesh.position.copyFrom(earthPosNow);
-    // updateTimeDisplay(simulationTimeJD);
+window.setSimTime?.(jdStart, { resetParticles: true, focus: true });
 
-    // tailParticles.length = 0;
-    // for (let i = 0; i < particleMeshes.length; i++) particleMeshes[i].setEnabled(false);
+
+
   }
 </script>
+
   <script>
   document.getElementById("startBtn").addEventListener("click", () => {
     const spinner = document.getElementById("loadingSpinner");
-    spinner.style.display = "block"; // loading spineris
+    spinner.style.display = "block";
 
     setTimeout(() => {
       document.getElementById("homeScreen").style.display = "none";
       startSimulation();
-    }, 300); //īss brītiņs, lai parādītu loading spineri
+    }, 300);
   });
 </script>
 </body>
