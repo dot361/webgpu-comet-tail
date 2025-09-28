@@ -9,7 +9,6 @@ async function startSimulation() {
 const canvas = document.getElementById("renderCanvas");
 let engine;
 let hasCompute = false;
-
 let gpuStatusEl = document.getElementById("gpuStatus");
 
 function setBadge(text, bg, border) {
@@ -18,57 +17,63 @@ function setBadge(text, bg, border) {
   gpuStatusEl.style.borderColor = border;
 }
 
+const FORCE_MODE = (new URLSearchParams(location.search).get("force") || "").toLowerCase();
+
 async function tryInitWebGPU() {
+  if (FORCE_MODE === "webgl") {
+    console.warn("[CometSim] FORCE=webgl -> skipping WebGPU init.");
+    return null;
+  }
+
   if (!window.isSecureContext) {
-    console.warn("[CometSim] Not a secure context:", location.protocol, "— WebGPU is disabled by the browser.");
+    console.warn("[CometSim] Not a secure context:", location.protocol, "— WebGPU is disabled.");
     return null;
   }
-
   if (!("gpu" in navigator)) {
-    console.warn("[CometSim] navigator.gpu is missing — browser doesn’t expose WebGPU.");
+    console.warn("[CometSim] navigator.gpu missing — browser doesn’t expose WebGPU.");
     return null;
   }
 
-  let wgpu;
   try {
-    wgpu = new BABYLON.WebGPUEngine(canvas, { antialiasing: true });
+    const wgpu = new BABYLON.WebGPUEngine(canvas, { antialiasing: true });
     await wgpu.initAsync();
+
+    const caps = wgpu.getCaps?.() || {};
+    hasCompute = !!(caps.supportComputeShaders || caps.supportCompute);
+    return wgpu;
   } catch (err) {
-    console.warn("[CometSim] WebGPU init failed; falling back to WebGL.", err);
+    console.warn("[CometSim] WebGPU init failed:", err);
     return null;
   }
-
-  const caps = wgpu.getCaps?.() || {};
-  hasCompute = !!(caps.supportComputeShaders || caps.supportCompute);
-
-  return wgpu;
 }
 
-try {
-  const wgpu = await tryInitWebGPU();
-  if (wgpu) {
-    engine = wgpu;
-    console.log("[CometSim] WebGPU enabled. Compute:", hasCompute);
-    setBadge(
-      hasCompute ? "GPU: WebGPU (Compute ON)" : "GPU: WebGPU (Compute OFF)",
-      hasCompute ? "#0b3d0b" : "#3d2f0b",
-      hasCompute ? "#0f0" : "#fd0"
-    );
-  } else {
-    throw new Error("WebGPU not supported");
+let wgpu = await tryInitWebGPU();
+if (wgpu) {
+  engine = wgpu;
+
+  if (FORCE_MODE === "cpu") {
+    console.warn("[CometSim] FORCE=cpu -> disabling compute on WebGPU engine.");
+    hasCompute = false;
   }
-} catch (e) {
-  console.warn("[CometSim] Falling back to WebGL. Reason:", e && e.message);
+
+  setBadge(
+    hasCompute ? "GPU: WebGPU (Compute ON)" : "GPU: WebGPU (Compute OFF)",
+    hasCompute ? "#0b3d0b" : "#3d2f0b",
+    hasCompute ? "#0f0"   : "#fd0"
+  );
+} else {
+  console.warn("[CometSim] Using WebGL fallback.");
   engine = new BABYLON.Engine(canvas, true);
   hasCompute = false;
   setBadge("GPU: WebGL (Compute OFF)", "#3d0b0b", "#f33");
 }
 
 window.__engineHasCompute = hasCompute;
-window.__engineIsWebGPU = (engine && engine.getClassName?.() === "WebGPUEngine");
+window.__engineIsWebGPU  = (engine && engine.getClassName?.() === "WebGPUEngine");
 
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color3(0.02, 0.02, 0.08);
+const useCompute = (engine instanceof BABYLON.WebGPUEngine) && hasCompute;
 
 
 //---------------------------TIME SETUP-----------------------------------
@@ -80,12 +85,11 @@ scene.clearColor = new BABYLON.Color3(0.02, 0.02, 0.08);
 let simulationTimeJD = 2451544.5;
 let simulationSpeed = 1;
 let uiAccum = 0;
-const UI_PERIOD = 0.15;
 
+const UI_PERIOD = 0.15;
 const timelineSlider = document.getElementById("timelineSlider");
 const timelineLabel = document.getElementById("timelineLabel");
 const updateViewBtn = document.getElementById("updateViewBtn");
-
 const baseJD = 2451544.5;
 
 timelineSlider.addEventListener("input", () => {
@@ -107,11 +111,11 @@ updateViewBtn.addEventListener("click", () => {
   const selectedJD = baseJD + parseInt(timelineSlider.value);
   simulationTimeJD = selectedJD;
 
-  const cometPos = getCometState(getTimeSincePerihelionJD(simulationTimeJD));
-  comet.position.copyFrom(cometPos);
+const cs = cometStateAtJD(simulationTimeJD);
+comet.position.copyFrom(cs.r_scene);
 
-  const earthPos = getEarthPosition(simulationTimeJD);
-  earthMesh.position.copyFrom(earthPos);
+const earthPos = getPlanetPosition(simulationTimeJD, earthEl);
+earthMesh.position.copyFrom(earthPos);
 
   tailParticles.length = 0;
 for (let i = 0; i < particleMeshes.length; i++) particleMeshes[i].setEnabled(false);
@@ -119,6 +123,7 @@ for (let i = 0; i < particleMeshes.length; i++) particleMeshes[i].setEnabled(fal
   if (rawParticles) {
     rawParticles.clear();
   }
+  cpuSlots.fill(undefined);
   gpuWriteCursor = 0;
   maxUsed = 0;
   expiryByIndex.fill(0);
@@ -132,10 +137,6 @@ function jdToDateString(jd) {
 }
 
   const timeDisplay = document.getElementById('simTimeDisplay');
-
-  function updateTimeDisplay(jd) {
-    timeDisplay.innerText = `Time: ${jd.toFixed(2)}`;
-  }
 
   function julianDayToDate(jd) {
     let Z = Math.floor(jd + 0.5);
@@ -197,8 +198,8 @@ function jdToDateString(jd) {
   camera.wheelDeltaPercentage = 0.005;
 
   let isCameraFocused = false;
-let lastCameraTarget = camera.target.clone();
-let lastCameraRadius = camera.radius;
+  let lastCameraTarget = camera.target.clone();
+  let lastCameraRadius = camera.radius;
 
 function setFocusOnComet(on) {
   isCameraFocused = on;
@@ -209,6 +210,8 @@ function setFocusOnComet(on) {
     lastCameraRadius = camera.radius;
 
     camera.lockedTarget = cometMesh;
+    camera.radius = Math.max(2, Math.min(camera.radius, 1e6));
+    if (!Number.isFinite(camera.beta) || camera.beta <= 0) camera.beta = Math.PI/3;
   } else {
     camera.lockedTarget = null;
     camera.setTarget(lastCameraTarget);
@@ -217,7 +220,6 @@ function setFocusOnComet(on) {
 }
 
 toggleFocusBtn.onclick = () => setFocusOnComet(!isCameraFocused);
-
 
 function setViewAxis(axis) {
   if (isCameraFocused) return;
@@ -247,11 +249,11 @@ function setViewAxis(axis) {
 
 //---------------------------------------ELEMENTS---------------------------------------
 //Define unit constants and Earth orbital parameters
-//Draw Earth orbit
-//Draw Earth, Sun and star field
+//Draw Planet orbits
+//Draw Planets, Sun and star field
 
 
-//EARTH
+//PLANETS
 
 
 const AU = 1.495978707e11;
@@ -260,59 +262,182 @@ const SECONDS_PER_DAY = 86400;
 const DEG = Math.PI / 180;
 const SCALE = 1e-10;
 
-const earthPos = new BABYLON.Vector3(
-  -0.00262790375,
-   0.01445101985,
-   0.00000302525
-);
+const GMsun = 1.32712440018e20;
+const MU_SCENE = GMsun * Math.pow(SCALE, 3);
 
-const earthE = 0.0167;
-const earthA = 1 * AU;
-const earthI = 0 * DEG;
-const earthOmega = 102.9372 * DEG;
-const earthOmegaCap = 0 * DEG;
-const earthT0 = 2451545.0;
-const earthM0 = 0;
+const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui");
 
-const earthMesh = BABYLON.MeshBuilder.CreateSphere("earth", { diameter: 0.2 }, scene);
-earthMesh.position = earthPos;
-const earthMaterial = new BABYLON.StandardMaterial("earthMat", scene);
-earthMaterial.diffuseColor = new BABYLON.Color3(0.2, 0.5, 1);
-earthMaterial.emissiveColor = new BABYLON.Color3(0.05, 0.1, 0.2);
-earthMesh.material = earthMaterial;
+function addLabel(mesh, text, opts = {}) {
+  const rect = new BABYLON.GUI.Rectangle();
+  rect.background = "transparent";
+  rect.thickness = 0;
+  rect.paddingLeft = "6px";
+  rect.paddingRight = "6px";
+  ui.addControl(rect);
+  rect.linkWithMesh(mesh);
+  rect.linkOffsetX = opts.offsetX ?? 18;
+  rect.linkOffsetY = opts.offsetY ?? -18;
 
-function drawEarthOrbit(scene, segments = 400) {
-  const orbitPoints = [];
-
-  for (let j = 0; j <= segments; j++) {
-    const theta = -Math.PI + (2 * Math.PI * j) / segments;
-    const r = earthA * (1 - earthE * earthE) / (1 + earthE * Math.cos(theta));
-    const x_orb = r * Math.cos(theta);
-    const y_orb = r * Math.sin(theta);
-
-    const x = x_orb * (Math.cos(earthOmegaCap) * Math.cos(earthOmega) -
-                       Math.sin(earthOmegaCap) * Math.sin(earthOmega) * Math.cos(earthI)) -
-              y_orb * (Math.cos(earthOmegaCap) * Math.sin(earthOmega) +
-                       Math.sin(earthOmegaCap) * Math.cos(earthOmega) * Math.cos(earthI));
-    const y = x_orb * (Math.sin(earthOmegaCap) * Math.cos(earthOmega) +
-                       Math.cos(earthOmegaCap) * Math.sin(earthOmega) * Math.cos(earthI)) +
-              y_orb * (-Math.sin(earthOmegaCap) * Math.sin(earthOmega) +
-                       Math.cos(earthOmegaCap) * Math.cos(earthOmega) * Math.cos(earthI));
-    const z = x_orb * Math.sin(earthI) * Math.sin(earthOmega) +
-              y_orb * Math.sin(earthI) * Math.cos(earthOmega);
-
-    orbitPoints.push(new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE));
-  }
-
-  const earthOrbitLine = BABYLON.MeshBuilder.CreateLines("earthOrbit", {
-    points: orbitPoints,
-    updatable: false,
-  }, scene);
-  earthOrbitLine.color = new BABYLON.Color3(0.3, 0.6, 1);
-  earthOrbitLine.isPickable = false;
+  const tb = new BABYLON.GUI.TextBlock();
+  tb.text = text;
+  tb.color = opts.color ?? "#cfd8ff";
+  tb.fontSize = opts.fontSize ?? 14;
+  tb.outlineWidth = 2;
+  tb.outlineColor = "#000000";
+  rect.addControl(tb);
+  return rect;
 }
 
-drawEarthOrbit(scene);
+function keplerSolveE(M, e) {
+  let E = M;
+  for (let k = 0; k < 12; k++) {
+    const f  = E - e * Math.sin(E) - M;
+    const fp = 1 - e * Math.cos(E);
+    const dE = -f / fp;
+    E += dE;
+    if (Math.abs(dE) < 1e-12) break;
+  }
+  return E;
+}
+
+function getPlanetPosition(jd, el) {
+
+  const a_m = el.a * AU;
+  const n   = Math.sqrt(GMsun / (a_m * a_m * a_m));
+  const t   = (jd - 2451545.0) * SECONDS_PER_DAY;
+
+  let M = el.M0 + n * t;
+  M = ((M % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI);
+
+  const E = keplerSolveE(M, el.e);
+  const cosE = Math.cos(E), sinE = Math.sin(E);
+
+  const x_orb = a_m * (cosE - el.e);
+  const y_orb = a_m * Math.sqrt(1 - el.e*el.e) * sinE;
+
+  const cO = Math.cos(el.Omega), sO = Math.sin(el.Omega);
+  const ci = Math.cos(el.i),     si = Math.sin(el.i);
+  const co = Math.cos(el.omega), so = Math.sin(el.omega);
+
+  const xp =  co * x_orb - so * y_orb;
+  const yp =  so * x_orb + co * y_orb;
+  const xpp = xp;
+  const ypp = ci * yp;
+  const zpp = si * yp;
+
+  const X = cO * xpp - sO * ypp;
+  const Y = sO * xpp + cO * ypp;
+  const Z = zpp;
+
+  return new BABYLON.Vector3(X * SCALE, Y * SCALE, Z * SCALE);
+}
+
+function drawPlanetOrbit(scene, el, segments = 1024, color = new BABYLON.Color3(0.6, 0.7, 0.9)) {
+  const pts = [];
+  for (let j = 0; j <= segments; j++) {
+    const nu = -Math.PI + (2*Math.PI*j)/segments;
+    const p  = el.a * AU * (1 - el.e*el.e);
+    const r  = p / (1 + el.e * Math.cos(nu));
+
+    const x_orb = r * Math.cos(nu);
+    const y_orb = r * Math.sin(nu);
+
+    const cO = Math.cos(el.Omega), sO = Math.sin(el.Omega);
+    const ci = Math.cos(el.i),     si = Math.sin(el.i);
+    const co = Math.cos(el.omega), so = Math.sin(el.omega);
+
+    const xp =  co*x_orb - so*y_orb;
+    const yp =  so*x_orb + co*y_orb;
+    const xpp = xp;
+    const ypp = ci*yp;
+    const zpp = si*yp;
+
+    const X = cO*xpp - sO*ypp;
+    const Y = sO*xpp + cO*ypp;
+    const Z = zpp;
+
+    pts.push(new BABYLON.Vector3(X * SCALE, Y * SCALE, Z * SCALE));
+  }
+
+  const line = BABYLON.MeshBuilder.CreateLines("orbit-"+(el.name||"p"), { points: pts }, scene);
+  line.color = color;
+  line.isPickable = false;
+  return line;
+}
+
+const PLANET_ELTS_DEG = [
+  // name,        a(AU),      e,        i,        Ω,         ω,         M0
+  ["Mercury",   0.387098,  0.205630,  7.00487,  48.33167,  77.45645, 252.25084],
+  ["Venus",     0.723332,  0.006772,  3.39471,  76.68069, 131.53298, 181.97973],
+  ["Earth",     1.000000,  0.016710,  0.00005, -11.26064, 102.94719, 100.46435],
+  ["Mars",      1.523679,  0.093400,  1.85000,  49.55809, 286.50200, 355.45332],
+  ["Jupiter",   5.20260,   0.048498,  1.30300, 100.55615,  14.75385,  34.40438],
+  ["Saturn",    9.55490,   0.055508,  2.48900, 113.71504,  92.43194,  49.94432],
+  ["Uranus",   19.21840,   0.046295,  0.77300,  74.00600, 170.96424, 313.23218],
+  ["Neptune",  30.11039,   0.008988,  1.77000, 131.78400,  44.97135, 304.88003],
+];
+
+const PLANET_ELTS = PLANET_ELTS_DEG.map(([name,a,e,i,Omega,omega,M0]) => ({
+  name, a, e,
+  i:     i     * DEG,
+  Omega: Omega * DEG,
+  omega: omega * DEG,
+  M0:    M0    * DEG
+}));
+
+const planetColors = {
+  Mercury: new BABYLON.Color3(0.65, 0.66, 0.68),
+  Venus:   new BABYLON.Color3(0.95, 0.85, 0.6),
+  Earth:   new BABYLON.Color3(0.2, 0.5, 1.0),
+  Mars:    new BABYLON.Color3(1.0, 0.45, 0.3),
+  Jupiter: new BABYLON.Color3(0.65, 0.45, 0.25),
+  Saturn:  new BABYLON.Color3(0.95, 0.9, 0.7),
+  Uranus:  new BABYLON.Color3(0.7, 0.9, 1.0),
+  Neptune: new BABYLON.Color3(0.6, 0.7, 1.0),
+};
+
+const planetSizes = {
+  Mercury: 0.10, Venus: 0.18, Earth: 0.20, Mars: 0.15,
+  Jupiter: 0.50, Saturn: 0.45, Uranus: 0.35, Neptune: 0.34,
+};
+
+const planets = [];
+
+for (const el of PLANET_ELTS) {
+  if (el.name === "Earth") continue;
+
+  const baseColor = planetColors[el.name] ?? new BABYLON.Color3(0.6, 0.7, 0.9);
+  const orbitColor = baseColor;
+  const orbitLine = drawPlanetOrbit(scene, el, 1200, orbitColor);
+  const size = planetSizes[el.name] ?? 0.2;
+  const mesh = BABYLON.MeshBuilder.CreateSphere("pl-"+el.name, { diameter: size }, scene);
+  const mat = new BABYLON.StandardMaterial("mat-"+el.name, scene);
+  mat.diffuseColor  = baseColor;
+  mat.emissiveColor = baseColor.scale(0.15);
+  mesh.material = mat;
+
+  mesh.position = getPlanetPosition(simulationTimeJD, el);
+
+  const lbl = addLabel(mesh, el.name, { color: baseColor.toHexString() });
+
+  planets.push({ name: el.name, el, mesh, label: lbl, orbitLine });
+}
+
+const earthEl = PLANET_ELTS.find(p => p.name === "Earth");
+const earthMesh = BABYLON.MeshBuilder.CreateSphere("earth", { diameter: 0.2 }, scene);
+const earthMaterial = new BABYLON.StandardMaterial("earthMat", scene);
+earthMaterial.diffuseColor  = planetColors.Earth;
+earthMaterial.emissiveColor = planetColors.Earth.scale(0.15);
+earthMesh.material = earthMaterial;
+earthMesh.position = getPlanetPosition(simulationTimeJD, earthEl);
+
+const earthLabel = addLabel(earthMesh, "Earth", {
+  color: planetColors.Earth.toHexString(),
+  offsetX: 18,
+  offsetY: -18,
+});
+
+drawPlanetOrbit(scene, earthEl, 1200, planetColors.Earth);
 
 
 //SUN
@@ -347,7 +472,14 @@ function createStarfield(scene, starCount = 8000, radius = 15000) {
   pcs.buildMeshAsync().then((mesh) => {
     mesh.alwaysSelectAsActiveMesh = true;
     mesh.isPickable = false;
-    mesh.material.pointSize = 2.0;
+    mesh.infiniteDistance = true;
+    mesh.renderingGroupId = 0;
+    if (mesh.material) {
+      mesh.material.pointSize = 2.0;
+      mesh.material.disableLighting = true;
+      mesh.material.backFaceCulling = false;
+      mesh.material.disableDepthWrite = true;
+    }
   });
 }
 
@@ -372,87 +504,15 @@ createStarfield(scene);
   let betaMin = parseFloat(betaMinInput.value);
   let betaMax = parseFloat(betaMaxInput.value);
   let betaSkew = parseFloat(betaSkewInput.value);
-
-  const GMsun = 1.32712440018e20;
-  const GM_sun_AU = 0.0002959122082855911;
-  const MU_SCENE = GMsun * Math.pow(SCALE, 3);
-
   let e = parseFloat(eccentricityInput.value);
   let q = parseFloat(perihelionInput.value) * AU;
   let a = q / (1 - e);
-
-  let q_AU = q / AU;
-  let a_AU = q_AU / (1 - e);
-
   let i = parseFloat(inclinationInput.value) * DEG;
   let omega = parseFloat(argumentPerihelionInput.value) * DEG;
   let Omega = parseFloat(longitudeAscendingNodeInput.value) * DEG;
   let t0 = parseFloat(perihelionDateInput.value);
-  const M0 = 0;
 
   let velocityScale = 1.0;
-
-  function getCometState(t) {
-    const n = Math.sqrt(GMsun / Math.pow(a, 3));
-    let M = M0 + n * t;
-    M = M % (2 * Math.PI);
-
-    let E = M;
-    for (let k = 0; k < 10; k++) {
-      E = M + e * Math.sin(E);
-    }
-
-    const nu = 2 * Math.atan2(
-      Math.sqrt(1 + e) * Math.sin(E / 2),
-      Math.sqrt(1 - e) * Math.cos(E / 2)
-    );
-
-    const r = a * (1 - e * e) / (1 + e * Math.cos(nu));
-    const x_orb = r * Math.cos(nu);
-    const y_orb = r * Math.sin(nu);
-
-    const x = x_orb * (Math.cos(Omega) * Math.cos(omega) - Math.sin(Omega) * Math.sin(omega) * Math.cos(i)) -
-              y_orb * (Math.cos(Omega) * Math.sin(omega) + Math.sin(Omega) * Math.cos(omega) * Math.cos(i));
-    const y = x_orb * (Math.sin(Omega) * Math.cos(omega) + Math.cos(Omega) * Math.sin(omega) * Math.cos(i)) +
-              y_orb * (-Math.sin(Omega) * Math.sin(omega) + Math.cos(Omega) * Math.cos(omega) * Math.cos(i));
-    const z = x_orb * (Math.sin(i) * Math.sin(omega)) + y_orb * (Math.sin(i) * Math.cos(omega));
-
-    return new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE);
-  }
-
-function getEarthPosition(jd) {
-  const n = Math.sqrt(GMsun / Math.pow(earthA, 3));
-  const t = (jd - earthT0) * 86400;
-  let M = earthM0 + n * t;
-  M = M % (2 * Math.PI);
-
-  let E = M;
-  for (let k = 0; k < 10; k++) {
-    E = M + earthE * Math.sin(E);
-  }
-
-  const nu = 2 * Math.atan2(
-    Math.sqrt(1 + earthE) * Math.sin(E / 2),
-    Math.sqrt(1 - earthE) * Math.cos(E / 2)
-  );
-
-  const r = earthA * (1 - earthE * earthE) / (1 + earthE * Math.cos(nu));
-  const x_orb = r * Math.cos(nu);
-  const y_orb = r * Math.sin(nu);
-
-  const x = x_orb * (Math.cos(earthOmegaCap) * Math.cos(earthOmega) -
-                     Math.sin(earthOmegaCap) * Math.sin(earthOmega) * Math.cos(earthI)) -
-            y_orb * (Math.cos(earthOmegaCap) * Math.sin(earthOmega) +
-                     Math.sin(earthOmegaCap) * Math.cos(earthOmega) * Math.cos(earthI));
-  const y = x_orb * (Math.sin(earthOmegaCap) * Math.cos(earthOmega) +
-                     Math.cos(earthOmegaCap) * Math.sin(earthOmega) * Math.cos(earthI)) +
-            y_orb * (-Math.sin(earthOmegaCap) * Math.sin(earthOmega) +
-                     Math.cos(earthOmegaCap) * Math.cos(earthOmega) * Math.cos(earthI));
-  const z = x_orb * Math.sin(earthI) * Math.sin(earthOmega) +
-            y_orb * Math.sin(earthI) * Math.cos(earthOmega);
-
-  return new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE);
-}
 
 
 //-------------------------------------COMETS ORBIT---------------------------------------------
@@ -463,30 +523,70 @@ function getEarthPosition(jd) {
 let orbitLine = null;
 
 function drawOrbit(scene, segments = 800) {
-  if (orbitLine) {
-    orbitLine.dispose();
-  }
+  if (orbitLine) orbitLine.dispose();
 
-  const orbitPoints = [];
+  const points = [];
+  const RMAX = 50 * AU;
+  const p = a * (1 - e * e);
+
+  let nuMin, nuMax;
+
+  if (e < 1) {
+    nuMin = -Math.PI;
+    nuMax =  Math.PI;
+  } else if (Math.abs(e - 1) < 1e-12) {
+    const pPar = 2 * q;
+    const c = Math.min(1, Math.max(-1, (pPar / RMAX) - 1));
+    const nuCap = Math.acos(c);
+    const eps = 1e-3;
+    nuMin = -Math.min(nuCap, Math.PI - eps);
+    nuMax =  Math.min(nuCap, Math.PI - eps);
+  } else {
+    const nuAsym = Math.acos(-1 / e);
+    const cNeeded = (p / RMAX) - 1;
+    let nuR = 0;
+    if (e > 0) {
+      const arg = Math.min(1, Math.max(-1, cNeeded / e));
+      nuR = Math.acos(arg);
+    }
+    const eps = 1e-3;
+    const nuCap = Math.min(nuAsym - eps, nuR || (nuAsym - eps));
+    nuMin = -nuCap;
+    nuMax =  nuCap;
+  }
 
   for (let j = 0; j <= segments; j++) {
-    const theta = -Math.PI + (2 * Math.PI * j) / segments;
-    const r = a * (1 - e * e) / (1 + e * Math.cos(theta));
-    const x_orb = r * Math.cos(theta);
-    const y_orb = r * Math.sin(theta);
-    const x = x_orb * (Math.cos(Omega) * Math.cos(omega) - Math.sin(Omega) * Math.sin(omega) * Math.cos(i)) -
-              y_orb * (Math.cos(Omega) * Math.sin(omega) + Math.sin(Omega) * Math.cos(omega) * Math.cos(i));
-    const y = x_orb * (Math.sin(Omega) * Math.cos(omega) + Math.cos(Omega) * Math.sin(omega) * Math.cos(i)) +
-              y_orb * (-Math.sin(Omega) * Math.sin(omega) + Math.cos(Omega) * Math.cos(omega) * Math.cos(i));
-    const z = x_orb * (Math.sin(i) * Math.sin(omega)) + y_orb * (Math.sin(i) * Math.cos(omega));
+    const nu = nuMin + (nuMax - nuMin) * (j / segments);
+    const denom = 1 + e * Math.cos(nu);
+    if (denom <= 0) continue;
+    const r = (Math.abs(e - 1) < 1e-12)
+      ? (2 * q) / denom
+      : p / denom;
 
-    orbitPoints.push(new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE));
+    if (!isFinite(r) || r > RMAX) continue;
+
+    const x_orb = r * Math.cos(nu);
+    const y_orb = r * Math.sin(nu);
+
+    const cO = Math.cos(Omega), sO = Math.sin(Omega);
+    const co = Math.cos(omega), so = Math.sin(omega);
+    const ci = Math.cos(i),     si = Math.sin(i);
+
+    const xp =  co * x_orb - so * y_orb;
+    const yp =  so * x_orb + co * y_orb;
+
+    const xpp = xp;
+    const ypp = ci * yp;
+    const zpp = si * yp;
+
+    const X = cO * xpp - sO * ypp;
+    const Y = sO * xpp + cO * ypp;
+    const Z = zpp;
+
+    points.push(new BABYLON.Vector3(X * SCALE, Y * SCALE, Z * SCALE));
   }
 
-  orbitLine = BABYLON.MeshBuilder.CreateLines("orbitPath", {
-    points: orbitPoints,
-    updatable: false,
-  }, scene);
+  orbitLine = BABYLON.MeshBuilder.CreateLines("orbitPath", { points }, scene);
   orbitLine.color = new BABYLON.Color3(0.8, 0.8, 0.8);
   orbitLine.isPickable = false;
 }
@@ -525,16 +625,19 @@ function drawOrbit(scene, segments = 800) {
 const V0_EJECTION_MS = 400;
 const EXP_BETA = 0.5;
 const EXP_RH = -0.5;
-const EXP_COSZ = 1.0;
+const EXP_COSZ = 2.0;
 
-const EJECTION_CONE_DEG = 90;
+const ACTIVE_R_AU = 3.0;
+const FADE_E_HALF = 1500.0;
+
+let cumulativeExposure = 0;
+function resetExposure() { cumulativeExposure = 0; }
 
 async function setupRawParticles(engine, parentCanvas, MAX_PARTICLES) {
   if (!(engine instanceof BABYLON.WebGPUEngine)) return null;
 
   const device = engine._device;
   const format = navigator.gpu.getPreferredCanvasFormat();
-
   const overlay = document.createElement('canvas');
   overlay.id = 'particleOverlay';
   overlay.style.position = 'absolute';
@@ -560,14 +663,15 @@ function resize() {
   ctx.configure({ device, format, alphaMode: 'premultiplied' });
 }
 resize();
+
 engine.onResizeObservable.add(resize);
 
 const WGSL_COMPUTE = `
 struct SimParams {
-  dtSeconds: f32,
-  maxCount: u32,
-  muScene: f32,
-  _pad1: u32,
+  dtSeconds : f32,
+  maxCount  : u32,
+  muScene   : f32,
+  _pad1     : u32,
 };
 
 @group(0) @binding(0) var<storage, read_write> posLife : array<vec4<f32>>;
@@ -575,11 +679,11 @@ struct SimParams {
 @group(0) @binding(2) var<uniform> sim : SimParams;
 
 fn accel(r: vec3<f32>, muScene: f32, beta: f32) -> vec3<f32> {
-  let r2   = max(1e-18, dot(r, r));
-  let invR = inverseSqrt(r2);
-  let invR3= invR * invR * invR;
-  let mu   = muScene * max(0.0, 1.0 - clamp(beta, 0.0, 1.0));
-  return -mu * r * invR3;
+  let r2    = max(1e-18, dot(r, r));
+  let invR  = inverseSqrt(r2);
+  let invR3 = invR * invR * invR;
+  let muEff = muScene * max(0.0, 1.0 - clamp(beta, 0.0, 1.0));
+  return -muEff * r * invR3;
 }
 
 @compute @workgroup_size(64)
@@ -595,12 +699,34 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   var v  = vb.xyz;
   let b  = vb.w;
 
-  let a0 = accel(r, sim.muScene, b);
-  v = v + a0 * sim.dtSeconds;
-  r = r + v  * sim.dtSeconds;
+  let dt = sim.dtSeconds;
+  if (dt <= 0.0) {
+    posLife[i] = vec4<f32>(r, p.w);
+    velBeta[i] = vec4<f32>(v, b);
+    return;
+  }
 
-  let life = max(p.w - sim.dtSeconds, 0.0);
+  let rmag  = max(1e-6, length(r));
+  let muEst = sim.muScene * max(1e-4, 1.0 - 0.5 * clamp(b, 0.0, 1.0));
+  let tDyn  = sqrt((rmag * rmag * rmag) / muEst);
+  let hMax  = 0.05 * tDyn;
+  var steps = i32(ceil(dt / hMax));
+  if (steps < 1) { steps = 1; }
+  if (steps > 8) { steps = 8; }
+  let h = dt / f32(steps);
 
+  var a = accel(r, sim.muScene, b);
+  v = v + a * (0.5 * h);
+  for (var s = 0; s < steps; s = s + 1) {
+    r = r + v * h;
+    a = accel(r, sim.muScene, b);
+    if (s + 1 < steps) {
+      v = v + a * h;
+    }
+  }
+  v = v + a * (0.5 * h);
+
+  let life = max(p.w - dt, 0.0);
   posLife[i] = vec4<f32>(r, life);
   velBeta[i] = vec4<f32>(v, b);
 }
@@ -608,9 +734,9 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   const WGSL_RENDER = `
 struct Globals {
-  viewProj : mat4x4<f32>,
-  lifeFadeInv : f32,       // 1 / lifeSeconds
-  _pad0 : vec3<f32>,       // align to 16 bytes
+  viewProj    : mat4x4<f32>,
+  lifeFadeInv : f32,
+  _pad0       : vec3<f32>,
 };
 @group(0) @binding(0) var<uniform> globals : Globals;
 @group(0) @binding(1) var<storage, read> posLife : array<vec4<f32>>;
@@ -630,16 +756,15 @@ fn vs_main(@builtin(vertex_index) vid : u32) -> VSOut {
     return out;
   }
   out.Position = globals.viewProj * vec4<f32>(p.xyz, 1.0);
-  out.life = p.w;                 // seconds remaining
+  out.life = p.w;
   return out;
 }
 
 @fragment
 fn fs_main(@location(0) life: f32) -> @location(0) vec4<f32> {
-  let a = clamp(life * globals.lifeFadeInv, 0.0, 1.0);  // fade over full lifetime
+  let a = clamp(life * globals.lifeFadeInv, 0.0, 1.0);
   return vec4<f32>(1.0, 1.0, 1.0, a);
 }
-
 `;
 
   const stride = 16;
@@ -725,7 +850,7 @@ device.queue.writeBuffer(simUBO, 4, new Uint32Array([maxCount >>> 0]));
 device.queue.writeBuffer(simUBO, 8, new Float32Array([MU_SCENE]));
 
     const lifeFadeInv = 1 / Math.max(1e-6, baseLifetime * SECONDS_PER_DAY);
-    device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);           // 64 bytes
+    device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);
     device.queue.writeBuffer(globalsUBO, 64, new Float32Array([lifeFadeInv, 0, 0, 0]));
     const enc = device.createCommandEncoder();
 
@@ -761,79 +886,91 @@ return { seed, update, resize, clear, max: MAX_PARTICLES };
 }
 
 function stumpffC(z) {
-  if (Math.abs(z) < 1e-8) return 1/2 - z/24 + z*z/720 - z*z*z/40320;
-  return (1 - Math.cos(Math.sqrt(z))) / z;
+  if (Math.abs(z) < 1e-8) return 0.5 - z/24 + (z*z)/720 - (z*z*z)/40320;
+  if (z > 0) {
+    const s = Math.sqrt(z);
+    return (1 - Math.cos(s)) / z;
+  } else {
+    const s = Math.sqrt(-z);
+    return (Math.cosh(s) - 1) / (-z);
+  }
 }
+
 function stumpffS(z) {
-  if (Math.abs(z) < 1e-8) return 1/6 - z/120 + z*z/5040 - z*z*z/362880;
-  const s = Math.sqrt(z);
-  return (s - Math.sin(s)) / (s*s*s);
+  if (Math.abs(z) < 1e-8) return 1/6 - z/120 + (z*z)/5040 - (z*z*z)/362880;
+  if (z > 0) {
+    const s = Math.sqrt(z);
+    return (s - Math.sin(s)) / (s*s*s);
+  } else {
+    const s = Math.sqrt(-z);
+    return (Math.sinh(s) - s) / (s*s*s);
+  }
 }
 
 function keplerUniversalPropagate(r0, v0, dt, mu) {
+  if (!isFinite(dt) || dt === 0) return { r: r0.clone(), v: v0.clone() };
+
   const r0mag = r0.length();
   const v0mag = v0.length();
-  const vr0 = BABYLON.Vector3.Dot(r0, v0) / r0mag;
-  const alpha = 2 / r0mag - (v0mag * v0mag) / mu;
+  const vr0   = BABYLON.Vector3.Dot(r0, v0) / Math.max(1e-12, r0mag);
+  const alpha = 2/Math.max(1e-12, r0mag) - (v0mag*v0mag)/mu;
 
   let x;
-  if (Math.abs(alpha) > 1e-12) {
-    x = Math.sqrt(mu) * Math.abs(alpha) * dt;
-  } else {
-    x = Math.sqrt(mu) * dt / r0mag;
-  }
+  if (Math.abs(alpha) > 1e-12) x = Math.sqrt(mu) * Math.abs(alpha) * Math.abs(dt);
+  else                         x = Math.sqrt(mu) * Math.abs(dt) / Math.max(1e-12, r0mag);
+  if (dt < 0) x = -x;
 
   const sqrtMu = Math.sqrt(mu);
-  for (let it = 0; it < 50; it++) {
+  for (let it = 0; it < 60; it++) {
     const z = alpha * x * x;
     const C = stumpffC(z);
     const S = stumpffS(z);
 
-    const F = r0mag * vr0 / sqrtMu * x * x * C
-            + (1 - alpha * r0mag) * x * x * x * S
-            + r0mag * x
-            - sqrtMu * dt;
-
-    const dF = r0mag * vr0 / sqrtMu * x * (1 - z * S)
-             + (1 - alpha * r0mag) * x * x * C
-             + r0mag;
+    const F  = r0mag*vr0/sqrtMu * x*x*C + (1 - alpha*r0mag)*x*x*x*S + r0mag*x - sqrtMu*dt;
+    const dF = r0mag*vr0/sqrtMu * x*(1 - z*S) + (1 - alpha*r0mag)*x*x*C + r0mag;
 
     const dx = -F / dF;
     x += dx;
-    if (Math.abs(dx) < 1e-8) break;
+    if (Math.abs(dx) < 1e-10) break;
   }
 
   const z = alpha * x * x;
   const C = stumpffC(z);
   const S = stumpffS(z);
-  const f = 1 - (x * x / r0mag) * C;
-  const g = dt - (x * x * x / sqrtMu) * S;
+  const f = 1 - (x*x / r0mag) * C;
+  const g = dt - (x*x*x / sqrtMu) * S;
   const r = r0.scale(f).add(v0.scale(g));
   const rmag = r.length();
-  const fdot = (sqrtMu / (rmag * r0mag)) * (z * S - 1) * x;
-  const gdot = 1 - (x * x / rmag) * C;
+  const fdot = (sqrtMu / (rmag * r0mag)) * (z*S - 1) * x;
+  const gdot = 1 - (x*x / rmag) * C;
   const v = r0.scale(fdot).add(v0.scale(gdot));
+
+  if (![r.x,r.y,r.z,v.x,v.y,v.z].every(Number.isFinite)) {
+    const rb = r0.add(v0.scale(dt));
+    return { r: rb, v: v0.clone() };
+  }
   return { r, v };
 }
-  const tailParticles = [];
-  const MAX_PARTICLES = 100000;
 
-  // const particleSizeInput = document.getElementById("particleSizeInput");
+  const tailParticles = [];
+  const MAX_PARTICLES_GPU = 100000;
+  const MAX_PARTICLES_CPU = 5000;
+  const MAX_PARTICLES = useCompute ? MAX_PARTICLES_GPU : MAX_PARTICLES_CPU;
+
+  const cpuSlots = new Array(MAX_PARTICLES);
+
   const particleLifetimeInput = document.getElementById("particleLifetimeInput");
   const particleCountInput = document.getElementById("particleCountInput");
   const activityExponentInput = document.getElementById("activityExponentInput");
   const activityScaleInput    = document.getElementById("activityScaleInput");
     
-  // let particleSize = parseFloat(particleSizeInput.value);
   let baseLifetime = parseFloat(particleLifetimeInput.value);
   let particleCountPerSec = parseInt(particleCountInput.value);
-  let baseEmitInterval = 1000 / particleCountPerSec;
-  let activityN = parseFloat(activityExponentInput?.value ?? 2) || 2; // exponent n
-  let activityK = parseFloat(activityScaleInput?.value ?? 1)   || 1; // scale k
+  let activityN = parseFloat(activityExponentInput?.value ?? 2) || 2;
+  let activityK = parseFloat(activityScaleInput?.value ?? 1)   || 1;
 
+  const rawParticles = useCompute ? await setupRawParticles(engine, canvas, MAX_PARTICLES) : null;
 
-  const engineIsWGPU = engine instanceof BABYLON.WebGPUEngine;
-  const rawParticles = engineIsWGPU ? await setupRawParticles(engine, canvas, MAX_PARTICLES) : null;
   if (rawParticles) rawParticles.clear();
 
 function seedParticleAt(index, r_scene, v_scene_per_s, lifeSeconds, beta) {
@@ -859,38 +996,43 @@ function sampleConeDirection(axis, halfAngleRad) {
     .normalize();
 }
 
-function getCometVelocity(t) {
-  const t_days = t / 86400;
-  const n = Math.sqrt(GM_sun_AU / Math.pow(a_AU, 3));
-  let M = (M0 + n * t_days) % (2 * Math.PI);
-  if (M < 0) M += 2 * Math.PI;
-
-  let E = M;
-  for (let k = 0; k < 10; k++) {
-    E = M + e * Math.sin(E);
-  }
-
-  const nu = 2 * Math.atan2(
-    Math.sqrt(1 + e) * Math.sin(E * 0.5),
-    Math.sqrt(1 - e) * Math.cos(E * 0.5)
-  );
-
-  const h = Math.sqrt(GM_sun_AU * a_AU * (1 - e * e));
-  const vx_orb = -(GM_sun_AU / h) * Math.sin(nu);
-  const vy_orb =  (GM_sun_AU / h) * (e + Math.cos(nu));
-
+function rotPQWtoIJK(v, Omega, i, omega) {
   const cO = Math.cos(Omega), sO = Math.sin(Omega);
-  const co = Math.cos(omega), so = Math.sin(omega);
   const ci = Math.cos(i),     si = Math.sin(i);
+  const co = Math.cos(omega), so = Math.sin(omega);
 
-  const vx =
-    vx_orb * ( cO*co - sO*so*ci ) - vy_orb * ( cO*so + sO*co*ci );
-  const vy =
-    vx_orb * ( sO*co + cO*so*ci ) + vy_orb * ( -sO*so + cO*co*ci );
-  const vz =
-    vx_orb * ( si*so ) + vy_orb * ( si*co );
+  let x =  co*v.x - so*v.y;
+  let y =  so*v.x + co*v.y;
+  let z =  v.z;
 
-  return new BABYLON.Vector3(vx, vy, vz).scale(AU / SECONDS_PER_DAY);
+  let x2 = x;
+  let y2 = ci*y - si*z;
+  let z2 = si*y + ci*z;
+
+  return new BABYLON.Vector3(
+    cO*x2 - sO*y2,
+    sO*x2 + cO*y2,
+    z2
+  );
+}
+
+function cometStateAtJD(jd) {
+  const e_ = e;
+  const mu = GMsun;
+  const q_m = q;
+  const dt = (jd - t0) * SECONDS_PER_DAY;
+  const r0_pf = new BABYLON.Vector3(q_m, 0, 0);
+  const v0_pf = new BABYLON.Vector3(0, Math.sqrt(mu * (1 + e_) / q_m), 0);
+  const r0 = rotPQWtoIJK(r0_pf, Omega, i, omega);
+  const v0 = rotPQWtoIJK(v0_pf, Omega, i, omega);
+
+  const { r, v } = keplerUniversalPropagate(r0, v0, dt, mu);
+
+  return {
+    r_scene: r.scale(SCALE),
+    v_scene_per_s: v.scale(SCALE),
+    rh_AU: r.length() / AU
+  };
 }
 
 let gpuWriteCursor = 0;
@@ -899,29 +1041,20 @@ let simSeconds = 0;
 const expiryByIndex = new Float32Array(MAX_PARTICLES);
 let maxUsed = 0;
 
-function getTimeSincePerihelionJD(jd) {
-  return (jd - t0) * 86400;
-}
-
 function createTailParticle(timeNowJD) {
   if (gpuWriteCursor >= MAX_PARTICLES) gpuWriteCursor = 0;
 
-  const tSincePerihelion = getTimeSincePerihelionJD(timeNowJD);
-  if (!isFinite(tSincePerihelion)) return;
-
-  const cometPos_scene = getCometState(tSincePerihelion);
-  const cometVel_mps   = getCometVelocity(tSincePerihelion);
-  const cometVel_scene = cometVel_mps.scale(SCALE);
-
-  const antiSolar_scene = cometPos_scene.clone().normalize();
-  const coneHalfAngle   = (EJECTION_CONE_DEG * Math.PI) / 180;
-  const dir_scene       = sampleConeDirection(antiSolar_scene, coneHalfAngle);
-
-  const rhAU = cometPos_scene.length() / (SCALE * AU);
-
+  const cs = cometStateAtJD(timeNowJD);
+  const cometPos_scene = cs.r_scene;
+  const cometVel_scene = cs.v_scene_per_s;
+  const rhAU = cs.rh_AU;
+  const sunward_scene = cometPos_scene.clone().scale(-1).normalize();
+  const n_scene = sampleCosinePowerHemisphere(sunward_scene, K_COS_Z);
+  const surface_scene = cometPos_scene.add(n_scene.scale(R_EMIT_SCENE));
+  const dir_scene = sampleConeDirection(n_scene, (EJECT_CONE_DEG * Math.PI) / 180);
   const beta = generateBeta(betaMin, betaMax, betaSkew);
+  const cosZ = Math.max(BABYLON.Vector3.Dot(n_scene, sunward_scene), 0);
 
-  const cosZ = Math.max(BABYLON.Vector3.Dot(dir_scene, antiSolar_scene), 0);
   const emissionSpeed_mps =
     V0_EJECTION_MS *
     Math.pow(Math.max(beta, 1e-6), EXP_BETA) *
@@ -929,25 +1062,57 @@ function createTailParticle(timeNowJD) {
     Math.pow(Math.max(cosZ, 1e-3), EXP_COSZ);
 
   const emissionVel_scene = dir_scene.scale(emissionSpeed_mps * SCALE);
-  const v_scene = cometVel_scene.add(emissionVel_scene);
+  const v_scene           = cometVel_scene.add(emissionVel_scene);
+const r0_scene = surface_scene;
+
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
-let tries = 0;
-while (tries < MAX_PARTICLES && expiryByIndex[gpuWriteCursor] > simSeconds) {
+  if (rawParticles) {
+    if (gpuWriteCursor >= MAX_PARTICLES) gpuWriteCursor = 0;
+
+    let tries = 0;
+    while (tries < MAX_PARTICLES && expiryByIndex[gpuWriteCursor] > simSeconds) {
+      gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
+      tries++;
+    }
+    if (tries === MAX_PARTICLES) return;
+
+    const idx = gpuWriteCursor;
+    expiryByIndex[idx] = simSeconds + lifeSeconds;
+    gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
+    if (idx + 1 > maxUsed) maxUsed = idx + 1;
+
+    seedParticleAt(idx, r0_scene, v_scene, lifeSeconds, beta);
+  } else {
+
+  if (gpuWriteCursor >= MAX_PARTICLES) gpuWriteCursor = 0;
+
+  let tries = 0;
+  while (tries < MAX_PARTICLES && expiryByIndex[gpuWriteCursor] > simSeconds) {
+    gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
+    tries++;
+  }
+
+  if (tries === MAX_PARTICLES) return;
+
+  const idx = gpuWriteCursor;
+
+  const r0_m   = r0_scene.scale(1 / SCALE);
+  const v0_mps = v_scene.scale(1 / SCALE);
+  const mu_p   = GMsun * Math.max(1 - beta, 0);
+
+  const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
+
+  cpuSlots[idx] = { t0JD: timeNowJD, r0_m, v0_mps, mu: mu_p, lifeSeconds };
+  expiryByIndex[idx] = simSeconds + lifeSeconds;
   gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
-  tries++;
-}
-if (tries === MAX_PARTICLES) {
-  return;
-}
+  if (idx + 1 > maxUsed) maxUsed = idx + 1;
 
-const idx = gpuWriteCursor;
-expiryByIndex[idx] = simSeconds + lifeSeconds;
-gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
-if (idx + 1 > maxUsed) maxUsed = idx + 1;
-
-seedParticleAt(idx, cometPos_scene, v_scene, lifeSeconds, beta);
-}
+  const mesh = particleMeshes[idx];
+  mesh.position.copyFrom(r0_scene);
+  mesh.setEnabled(true);
+  if (mesh.material) mesh.material.alpha = 0.5;
+}}
 
 function generateBeta(min, max, skew) {
   if (min === max) return min;
@@ -959,10 +1124,35 @@ function generateBeta(min, max, skew) {
   return min + u * (max - min);
 }
 
+const NUCLEUS_RADIUS_KM = 1.0;
+const R_EMIT_SCENE = (NUCLEUS_RADIUS_KM * 1000) * SCALE;
+
+const EJECT_CONE_DEG = 30;
+const K_COS_Z = 1.0;
+
+function sampleCosinePowerHemisphere(axis, k) {
+  const zAxis = axis.clone().normalize();
+  const tmp   = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
+  const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
+  const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
+
+  const u = Math.random();
+  const v = Math.random();
+  const cosTheta = Math.pow(u, 1 / (k + 1));
+  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta*cosTheta));
+  const phi = 2 * Math.PI * v;
+
+  return zAxis.scale(cosTheta)
+    .add(xAxis.scale(sinTheta * Math.cos(phi)))
+    .add(yAxis.scale(sinTheta * Math.sin(phi)))
+    .normalize();
+}
+
 
 //------------------------------------USER INTERFACE---------------------------------
 //Wire up speed slider, pause button, and all input fields.
 //Rebuild orbit parameters when inputs change
+//Set up keyboard shortcuts
 
 
 const velocitySlider = document.getElementById("velocitySlider");
@@ -986,42 +1176,31 @@ function updateOrbitParameters() {
   Omega = parseFloat(longitudeAscendingNodeInput.value) * DEG;
   omega = parseFloat(argumentPerihelionInput.value) * DEG;
   t0 = parseFloat(perihelionDateInput.value);
-
   betaMin = parseFloat(betaMinInput.value);
   betaMax = parseFloat(betaMaxInput.value);
   betaSkew = parseFloat(betaSkewInput.value);
-
-
   activityN = parseFloat(activityExponentInput.value);
   activityK = parseFloat(activityScaleInput.value);
-
   betaMin = Math.min(Math.max(betaMin, 0), 1);
   betaMax = Math.min(Math.max(betaMax, 0), 1);
+
 if (betaMax < betaMin) [betaMin, betaMax] = [betaMax, betaMin];
 
   a = q / (1 - e);
-  averageOrbitalSpeed = Math.sqrt(GMsun / a);
 
   if (orbitLine) orbitLine.dispose();
   drawOrbit(scene);
 
-  // particleSize  = parseFloat(particleSizeInput.value);
-  baseLifetime  = parseFloat(particleLifetimeInput.value);   // days
-
+  baseLifetime  = parseFloat(particleLifetimeInput.value);
   particleCountPerSec = parseFloat(particleCountInput.value) || 1;
   particleCountPerSec = Math.max(0.01, particleCountPerSec);
-  baseEmitInterval = 1000 / particleCountPerSec;
-  lastEmitSim = simSeconds;
-
 
   if (!isFinite(activityN)) activityN = 2;
   if (!isFinite(activityK)) activityK = 1;
-  activityN = Math.max(0, Math.min(6, activityN)); // clamp 0..6
-  activityK = Math.max(0, activityK);              // no negative activity
+  activityN = Math.max(0, Math.min(6, activityN));
+  activityK = Math.max(0, activityK);
+  resetExposure();
 
-  // for (let mesh of particleMeshes) {
-  //   mesh.scaling.set(particleSize, particleSize, particleSize);
-  // }
 }
 
 window.updateOrbitParameters = updateOrbitParameters;
@@ -1036,7 +1215,6 @@ window.updateOrbitParameters = updateOrbitParameters;
   betaMinInput,
   betaMaxInput,
   betaSkewInput,
-  // particleSizeInput,
   particleLifetimeInput,
   particleCountInput,
   activityExponentInput, 
@@ -1055,33 +1233,48 @@ pauseBtn.addEventListener("click", () => {
     updateTimelineUIState();
 });
 
-function getDustPositionKepler(p, currentJD) {
-  const dt = (currentJD - p.t0JD) * SECONDS_PER_DAY;
-  if (dt < 0) return p.r0_m.scale(SCALE);
-  if (p.mu <= 0) {
-    const r_ballistic = p.r0_m.add(p.v0_mps.scale(dt));
-    return r_ballistic.scale(SCALE);
-  }
-  const prop = keplerUniversalPropagate(p.r0_m, p.v0_mps, dt, p.mu);
-  return prop.r.scale(SCALE);
-}
   const particleMeshes = [];
 
-if (!hasCompute) {
+if (!useCompute) {
   for (let i = 0; i < MAX_PARTICLES; i++) {
-    const mesh = BABYLON.MeshBuilder.CreateIcoSphere("tailParticle", { radius: 0.5, subdivisions: 2 }, scene);
-    // mesh.scaling.set(particleSize, particleSize, particleSize);
-
+    const mesh = BABYLON.MeshBuilder.CreateIcoSphere("tailParticle", { radius: 0.05, subdivisions: 2 }, scene);
     const mat = new BABYLON.StandardMaterial("tailMat", scene);
     mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
     mat.diffuseColor  = new BABYLON.Color3(0.6, 0.6, 0.6);
     mat.alpha = 0.5;
-
     mesh.material = mat;
     mesh.setEnabled(false);
     particleMeshes.push(mesh);
   }
 }
+
+function setSimTime(jd, opts = {}) {
+  const { resetParticles = true, focus = true } = opts;
+
+  simulationTimeJD = jd;
+
+  timelineSlider.value = String(Math.floor(jd - baseJD));
+  timelineLabel.textContent = `Date: ${jdToDateString(jd)}`;
+  updateTimeDisplay(jd);
+
+  const cs = cometStateAtJD(jd);
+  comet.position.copyFrom(cs.r_scene);
+  earthMesh.position.copyFrom(getPlanetPosition(jd, earthEl));
+
+  if (resetParticles) {
+    tailParticles.length = 0;
+    for (let i = 0; i < particleMeshes.length; i++) particleMeshes[i].setEnabled(false);
+    if (rawParticles) rawParticles.clear();
+    gpuWriteCursor = 0;
+    maxUsed = 0;
+    expiryByIndex.fill(0);
+    simSeconds = 0;
+    resetExposure();
+  }
+
+  if (focus) setFocusOnComet(true);
+}
+window.setSimTime = setSimTime;
 
 window.addEventListener("resize", () => {
   engine.resize();
@@ -1096,7 +1289,94 @@ if (rawParticles) {
   });
 }
 
-let lastEmitSim = 0;
+(function setupShortcuts() {
+  function isTypingTarget(el) {
+    return el && (
+      el.tagName === 'INPUT' ||
+      el.tagName === 'TEXTAREA' ||
+      el.isContentEditable
+    );
+  }
+
+  const velocitySlider = document.getElementById("velocitySlider");
+  function nudgeSpeed(delta) {
+    if (!velocitySlider) return;
+    const min = Number(velocitySlider.min ?? -24);
+    const max = Number(velocitySlider.max ??  24);
+    const cur = Number(velocitySlider.value || 0);
+    const next = Math.max(min, Math.min(max, cur + delta));
+    if (next !== cur) {
+      velocitySlider.value = String(next);
+      velocitySlider.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  function toggleCometOrbit() {
+    if (window.orbitLine) window.orbitLine.setEnabled(!window.orbitLine.isEnabled());
+    else document.getElementById("toggleOrbitBtn")?.click();
+  }
+
+  function toggleFocus() {
+    if (typeof window.setFocusOnComet === 'function') {
+      window.setFocusOnComet(!window.isCameraFocused);
+    } else {
+      document.getElementById("toggleFocusBtn")?.click();
+    }
+  }
+
+  function snapAxis(ax) {
+    if (typeof window.setViewAxis === 'function') window.setViewAxis(ax);
+  }
+
+  function updateTimelineView() {
+    document.getElementById("updateViewBtn")?.click();
+  }
+
+  function togglePause() {
+    document.getElementById("pauseBtn")?.click();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (isTypingTarget(e.target)) return;
+
+    switch (e.key) {
+      case ' ':
+        e.preventDefault();
+        togglePause();
+        return;
+
+      case 'a': case 'A':
+        if (e.shiftKey) { e.preventDefault(); nudgeSpeed(-1); }
+        return;
+      case 'd': case 'D':
+        if (e.shiftKey) { e.preventDefault(); nudgeSpeed(+1); }
+        return;
+
+      case 'u': case 'U':
+        e.preventDefault();
+        updateTimelineView();
+        return;
+
+      case 'f': case 'F':
+        e.preventDefault();
+        toggleFocus();
+        return;
+
+      case 'x': case 'X':
+        e.preventDefault(); snapAxis('X'); return;
+      case 'y': case 'Y':
+        e.preventDefault(); snapAxis('Y'); return;
+      case 'z': case 'Z':
+        e.preventDefault(); snapAxis('Z'); return;
+
+      case 'o': case 'O':
+        e.preventDefault();
+        toggleCometOrbit();
+        return;
+
+    }
+  });
+})();
 
 
 //-----------------------------RENDER LOOP-------------------------------
@@ -1117,6 +1397,15 @@ if (!isPaused) {
   simSeconds += dtSeconds;
 }
 
+const dtDays = dtSeconds / SECONDS_PER_DAY;
+const rAU_now = Math.max(1e-3, comet.position.length() / (SCALE * AU));
+
+if (rAU_now <= ACTIVE_R_AU) {
+  cumulativeExposure += dtDays / (rAU_now * rAU_now);
+}
+
+const ageFactor = Math.exp(-Math.LN2 * (cumulativeExposure / FADE_E_HALF));
+
 simulationTimeJD += simulationSpeed * (engine.getDeltaTime() / 1000) / 86400;
 
 uiAccum += engine.getDeltaTime() / 1000;
@@ -1132,87 +1421,89 @@ if (uiAccum >= UI_PERIOD) {
     for (let i = 0; i < maxUsed; i++) {
       if (expiryByIndex[i] > simSeconds) active++;
     }
-    drawCount = active;
     particleCounter.textContent = "Particles (GPU): " + active;
   } else {
-    particleCounter.textContent = "Particles: " + tailParticles.length;
+  let active = 0;
+  for (let i = 0; i < maxUsed; i++) {
+    if (expiryByIndex[i] > simSeconds && cpuSlots[i]) active++;
   }
-
+  particleCounter.textContent = "Particles (CPU): " + active;
+}
   uiAccum = 0;
 }
-    const cometPos = getCometState(getTimeSincePerihelionJD(simulationTimeJD));
-    comet.position.copyFrom(cometPos);
-// PREV:
-// const emitIntervalSeconds = (baseEmitInterval / 1000) / simulationSpeed;
-// if (!isPaused && (simSeconds - lastEmitSim) >= emitIntervalSeconds) {
-//   createTailParticle(simulationTimeJD);
-//   lastEmitSim = simSeconds;
-// }
-// NEW:
-// how many you’ll allow per frame
-// --- births-per-frame emitter with Q(r) = 1/r^2 ---
-// Reinterpret slider: "Max births per frame at 1 AU"
+
 const MAX_BIRTHS_PER_FRAME_AT_1_AU = Math.max(0, parseFloat(particleCountInput.value) || 0);
 
-// Distance r in AU (comet–Sun)
+const cs_now = cometStateAtJD(simulationTimeJD);
+comet.position.copyFrom(cs_now.r_scene);
 const rAU   = comet.position.length() / (SCALE * AU);
 const rSafe = Math.max(1e-3, rAU);
-
-// Activity scale Q = 1/r^2, clamped so we never exceed the slider at perihelion
-// const Q = 1 / (rSafe * rSafe *rSafe *rSafe);
-const Q = Math.max(0, activityK) / Math.pow(rSafe, Math.max(0, activityN));
-
-const scale = Math.min(1, Q);  // clamp: <= 1
-
-// Target births this frame
+const Q = Math.max(0, activityK) * ageFactor / Math.pow(rSafe, Math.max(0, activityN));
+const scale = Math.min(1, Q);
 const targetBPF = MAX_BIRTHS_PER_FRAME_AT_1_AU * scale;
 
-// Accumulate fractional births so the average matches the target
 window.emitCarry = (typeof window.emitCarry !== "undefined") ? window.emitCarry : 0;
 window.emitCarry += targetBPF;
 
 let births = Math.floor(window.emitCarry);
 window.emitCarry -= births;
 
-// Optional hard safety cap so a crazy slider value doesn't spike
 const HARD_CAP = 512;
 if (births > HARD_CAP) births = HARD_CAP;
 
-// Spawn births *at now* (no intra-frame spread -> no "line" artifact)
 if (!isPaused && births > 0) {
+  const emitJD = simulationTimeJD - (dtSeconds / SECONDS_PER_DAY);
   for (let i = 0; i < births; i++) {
-    createTailParticle(simulationTimeJD, simSeconds); // uses per-particle birth for expiry
-  }
-}
-
-
+    createTailParticle(emitJD);
+}}
 
 while (tailParticles.length &&
   (simulationTimeJD - tailParticles[0].t0JD) > tailParticles[0].lifetimeDays) {
     tailParticles.shift();
 }
 
-if (!hasCompute) {
-  for (let i = 0; i < tailParticles.length; i++) {
-    const p = tailParticles[i];
-    const pos = getDustPositionKepler(p, simulationTimeJD);
-    particleMeshes[i].position.copyFrom(pos);
-    particleMeshes[i].setEnabled(true);
-  }
-  for (let i = tailParticles.length; i < particleMeshes.length; i++) {
-    particleMeshes[i].setEnabled(false);
+if (!useCompute) {
+  for (let i = 0; i < maxUsed; i++) {
+    const alive = (expiryByIndex[i] > simSeconds) && cpuSlots[i];
+    const mesh  = particleMeshes[i];
+
+    if (!alive) {
+      if (mesh.isEnabled()) mesh.setEnabled(false);
+      continue;
+    }
+
+    const slot = cpuSlots[i];
+    const dt = (simulationTimeJD - slot.t0JD) * SECONDS_PER_DAY;
+
+    let rScene;
+    if (dt <= 0) {
+      rScene = slot.r0_m.scale(SCALE);
+    } else if (slot.mu <= 0) {
+      rScene = slot.r0_m.add(slot.v0_mps.scale(dt)).scale(SCALE);
+    } else {
+      rScene = keplerUniversalPropagate(slot.r0_m, slot.v0_mps, dt, slot.mu).r.scale(SCALE);
+    }
+    mesh.position.copyFrom(rScene);
+
+    const lifeLeft = Math.max(0, expiryByIndex[i] - simSeconds);
+    const a = Math.max(0, Math.min(1, lifeLeft / slot.lifeSeconds));
+    if (mesh.material) mesh.material.alpha = 0.5 * a;
+
+    if (!mesh.isEnabled()) mesh.setEnabled(true);
   }
 }
 
-const earthPos = getEarthPosition(simulationTimeJD);
-earthMesh.position.copyFrom(earthPos); 
+for (const p of planets) {
+  const pos = getPlanetPosition(simulationTimeJD, p.el);
+  p.mesh.position.copyFrom(pos);
+}
+
+const earthPos = getPlanetPosition(simulationTimeJD, earthEl);
+earthMesh.position.copyFrom(earthPos);
 }
 
   scene.render();
 });
 
-  window.addEventListener("resize", () => {
-    engine.resize();
-  });
   window.setViewAxis = setViewAxis;
 }
