@@ -500,7 +500,9 @@ createStarfield(scene);
   const betaMinInput = document.getElementById("betaMinInput");
   const betaMaxInput = document.getElementById("betaMaxInput");
   const betaSkewInput = document.getElementById("betaSkewInput");
+  const activityHalfLifeInput = document.getElementById("activityHalfLifeInput");
 
+  let fadeHalfLifeEDays = parseFloat(activityHalfLifeInput?.value) || 1500;
   let betaMin = parseFloat(betaMinInput.value);
   let betaMax = parseFloat(betaMaxInput.value);
   let betaSkew = parseFloat(betaSkewInput.value);
@@ -626,9 +628,7 @@ const V0_EJECTION_MS = 400;
 const EXP_BETA = 0.5;
 const EXP_RH = -0.5;
 const EXP_COSZ = 2.0;
-
 const ACTIVE_R_AU = 3.0;
-const FADE_E_HALF = 1500.0;
 
 let cumulativeExposure = 0;
 function resetExposure() { cumulativeExposure = 0; }
@@ -969,6 +969,9 @@ function keplerUniversalPropagate(r0, v0, dt, mu) {
   let activityN = parseFloat(activityExponentInput?.value ?? 2) || 2;
   let activityK = parseFloat(activityScaleInput?.value ?? 1)   || 1;
 
+  fadeHalfLifeEDays = parseFloat(activityHalfLifeInput.value);
+  if (!isFinite(fadeHalfLifeEDays) || fadeHalfLifeEDays <= 0) fadeHalfLifeEDays = 1500;
+
   const rawParticles = useCompute ? await setupRawParticles(engine, canvas, MAX_PARTICLES) : null;
 
   if (rawParticles) rawParticles.clear();
@@ -1025,7 +1028,6 @@ function cometStateAtJD(jd) {
   const v0_pf = new BABYLON.Vector3(0, Math.sqrt(mu * (1 + e_) / q_m), 0);
   const r0 = rotPQWtoIJK(r0_pf, Omega, i, omega);
   const v0 = rotPQWtoIJK(v0_pf, Omega, i, omega);
-
   const { r, v } = keplerUniversalPropagate(r0, v0, dt, mu);
 
   return {
@@ -1063,7 +1065,7 @@ function createTailParticle(timeNowJD) {
 
   const emissionVel_scene = dir_scene.scale(emissionSpeed_mps * SCALE);
   const v_scene           = cometVel_scene.add(emissionVel_scene);
-const r0_scene = surface_scene;
+  const r0_scene = surface_scene;
 
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
@@ -1096,7 +1098,6 @@ const r0_scene = surface_scene;
   if (tries === MAX_PARTICLES) return;
 
   const idx = gpuWriteCursor;
-
   const r0_m   = r0_scene.scale(1 / SCALE);
   const v0_mps = v_scene.scale(1 / SCALE);
   const mu_p   = GMsun * Math.max(1 - beta, 0);
@@ -1218,7 +1219,8 @@ window.updateOrbitParameters = updateOrbitParameters;
   particleLifetimeInput,
   particleCountInput,
   activityExponentInput, 
-  activityScaleInput
+  activityScaleInput,
+  activityHalfLifeInput
 ].forEach(input => {
   input.addEventListener("input", updateOrbitParameters);
 });
@@ -1404,7 +1406,7 @@ if (rAU_now <= ACTIVE_R_AU) {
   cumulativeExposure += dtDays / (rAU_now * rAU_now);
 }
 
-const ageFactor = Math.exp(-Math.LN2 * (cumulativeExposure / FADE_E_HALF));
+const ageFactor = Math.exp(-Math.LN2 * (cumulativeExposure / Math.max(1e-6, fadeHalfLifeEDays)));
 
 simulationTimeJD += simulationSpeed * (engine.getDeltaTime() / 1000) / 86400;
 
@@ -1433,7 +1435,6 @@ if (uiAccum >= UI_PERIOD) {
 }
 
 const MAX_BIRTHS_PER_FRAME_AT_1_AU = Math.max(0, parseFloat(particleCountInput.value) || 0);
-
 const cs_now = cometStateAtJD(simulationTimeJD);
 comet.position.copyFrom(cs_now.r_scene);
 const rAU   = comet.position.length() / (SCALE * AU);
@@ -1441,6 +1442,11 @@ const rSafe = Math.max(1e-3, rAU);
 const Q = Math.max(0, activityK) * ageFactor / Math.pow(rSafe, Math.max(0, activityN));
 const scale = Math.min(1, Q);
 const targetBPF = MAX_BIRTHS_PER_FRAME_AT_1_AU * scale;
+const boxQ     = document.getElementById("actBoxQ");
+const boxDecay = document.getElementById("actBoxDecay");
+
+if (boxQ)     boxQ.textContent     = `Q: ${Q.toFixed(3)}`;
+if (boxDecay) boxDecay.textContent = `decay: ${(ageFactor * 100).toFixed(1)}%`;
 
 window.emitCarry = (typeof window.emitCarry !== "undefined") ? window.emitCarry : 0;
 window.emitCarry += targetBPF;
