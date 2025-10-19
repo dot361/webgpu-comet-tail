@@ -258,10 +258,8 @@ function setViewAxis(axis) {
 
 const AU = 1.495978707e11;
 const SECONDS_PER_DAY = 86400;
-
 const DEG = Math.PI / 180;
 const SCALE = 1e-10;
-
 const GMsun = 1.32712440018e20;
 const MU_SCENE = GMsun * Math.pow(SCALE, 3);
 
@@ -286,6 +284,121 @@ function addLabel(mesh, text, opts = {}) {
   tb.outlineColor = "#000000";
   rect.addControl(tb);
   return rect;
+}
+
+let currentCometSource = "user";
+let currentCometName = null;
+
+function cometClassCode(e, a_AU, i_deg) {
+  if (e >= 1.0) return "HYP";
+  const P = Math.pow(a_AU, 1.5);
+  if (P < 20 && i_deg < 40) return "SP";
+  if (P < 200) return "HT";
+  return "LP";
+}
+
+function userModelLabel(e, a_AU, q_AU, i_deg) {
+  const code = cometClassCode(e, a_AU, i_deg);
+  return `User model · ${code} · q ${q_AU.toFixed(2)} AU`;
+}
+
+function cometClassCode(e, a_AU, i_deg) {
+  if (e >= 1.0) return "HYP";
+  const P = Math.pow(a_AU, 1.5);
+  if (P < 20 && i_deg < 40) return "SP";
+  if (P < 200) return "HT";
+  return "LP";
+}
+
+function ensureCometLabel(mesh, text, opts = {}) {
+  if (mesh._cometLabel) return mesh._cometLabel;
+
+  const nameFromMeta = mesh.metadata?.cometName;
+  const nameFromMesh = mesh.name && mesh.name !== "comet" ? mesh.name : null;
+  const finalText = nameFromMeta || nameFromMesh || text;
+
+  const lbl = addLabel(mesh, finalText, {
+    color: "#ffd7a8",
+    fontSize: 16,
+    offsetY: -24,
+    ...opts
+  });
+  mesh._cometLabel = lbl;
+  return lbl;
+}
+
+function labelPresetComets(scene) {
+  const presets = scene.meshes.filter(
+    m => m !== cometMesh && m.name.toLowerCase().includes("comet")
+  );
+  for (const m of presets) {
+    const text = m.metadata?.cometName || (m.name !== "comet" ? m.name : null);
+    ensureCometLabel(m, text || "Comet");
+  }
+}
+
+const PRESET_FINDERS = [
+  { key: "67p",      id: "67P",     name: "67P/Churyumov–Gerasimenko" },
+  { key: "c2024e1",  id: "C2024E1", name: "C/2024 E1" },
+  { key: "133p",     id: "133P",    name: "133P/Elst–Pizarro" },
+  { key: "3i",       id: "3I",      name: "3I/ATLAS" }
+];
+
+for (const f of PRESET_FINDERS) {
+  const mesh = scene.meshes.find(m =>
+    m !== cometMesh &&
+    m.name.toLowerCase().includes("comet") &&
+    m.name.toLowerCase().includes(f.key)
+  );
+  if (!mesh) continue;
+  mesh.metadata = mesh.metadata || {};
+  mesh.metadata.presetId = f.id;
+  mesh.metadata.cometName = mesh.metadata.cometName || f.name;
+  ensureCometLabel(mesh, mesh.metadata.cometName);
+}
+
+scene.onPointerObservable.add((pi) => {
+  if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
+  const picked = pi.pickInfo?.pickedMesh;
+  if (!picked || picked === cometMesh) return;
+
+  const pid = picked.metadata?.presetId;
+  if (pid && typeof window.loadComet === "function") {
+    window.loadComet(pid);
+    window.switchToPreset?.(picked.metadata?.cometName || pid);
+  }
+});
+
+function applyElementsToUI(elts) {
+  if (elts.e !== undefined) eccentricityInput.value = String(elts.e);
+  if (elts.q_AU !== undefined) perihelionInput.value   = String(elts.q_AU);
+  if (elts.i_deg !== undefined) inclinationInput.value  = String(elts.i_deg);
+  if (elts.Omega_deg !== undefined) longitudeAscendingNodeInput.value = String(elts.Omega_deg);
+  if (elts.omega_deg !== undefined) argumentPerihelionInput.value = String(elts.omega_deg);
+  if (elts.t0_JD !== undefined) perihelionDateInput.value = String(elts.t0_JD);
+
+  updateOrbitParameters();
+}
+
+function activatePresetComet(mesh) {
+  const name = mesh.metadata?.cometName || mesh.name || "Comet";
+  const elts = mesh.metadata?.elts;
+  if (!elts) {
+    console.warn("[CometSim] Preset comet clicked but no metadata.elts found on:", mesh.name);
+    return;
+  }
+
+  currentCometSource = "preset";
+  currentCometName   = name;
+
+  applyElementsToUI(elts);
+
+  if (customCometLabel) {
+    const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
+    if (tb) tb.text = currentCometName;
+  }
+
+  setFocusOnComet(true);
 }
 
 function keplerSolveE(M, e) {
@@ -497,15 +610,9 @@ createStarfield(scene);
   const longitudeAscendingNodeInput = document.getElementById("longitudeAscendingNodeInput");
   const argumentPerihelionInput = document.getElementById("argumentPerihelionInput");
   const perihelionDateInput = document.getElementById("perihelionDateInput");
-  const betaMinInput = document.getElementById("betaMinInput");
-  const betaMaxInput = document.getElementById("betaMaxInput");
-  const betaSkewInput = document.getElementById("betaSkewInput");
   const activityHalfLifeInput = document.getElementById("activityHalfLifeInput");
 
   let fadeHalfLifeEDays = parseFloat(activityHalfLifeInput?.value) || 1500;
-  let betaMin = parseFloat(betaMinInput.value);
-  let betaMax = parseFloat(betaMaxInput.value);
-  let betaSkew = parseFloat(betaSkewInput.value);
   let e = parseFloat(eccentricityInput.value);
   let q = parseFloat(perihelionInput.value) * AU;
   let a = q / (1 - e);
@@ -615,7 +722,342 @@ function drawOrbit(scene, segments = 800) {
   cometMaterial.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1);
   cometMesh.material = cometMaterial;
 
+let customCometLabel = ensureCometLabel(
+  cometMesh,
+  userModelLabel(e, a / AU, q / AU, i / DEG)
+);
+
+function setActiveCometLabelText(text) {
+  if (!customCometLabel) return;
+  const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
+  if (tb) tb.text = text;
+}
+
+window.switchToPreset = function(name) {
+  currentCometSource = "preset";
+  currentCometName = name || "Comet";
+  setActiveCometLabelText(currentCometName);
+};
+
+window.switchToUser = function() {
+  currentCometSource = "user";
+  currentCometName = null;
+  setActiveCometLabelText(userModelLabel(e, a / AU, q / AU, i / DEG));
+};
+
+labelPresetComets(scene);
+
+if (typeof window.loadComet === "function") {
+  window._skipInitialFocus = true;
+  setTimeout(() => {
+    window.loadComet("67P");
+    window.switchToPreset?.("67P/Churyumov–Gerasimenko");
+  }, 100);
+}
+
+scene.onPointerObservable.add((pi) => {
+  if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
+  const picked = pi.pickInfo?.pickedMesh;
+  if (!picked || picked === cometMesh) return;
+
+  const isPreset = !!(picked.metadata?.cometName && picked.metadata?.elts);
+  if (isPreset) {
+    activatePresetComet(picked);
+  }
+});
+
   window.updateOrbitParameters = updateOrbitParameters;
+
+const betaUI = {
+  canvas: document.getElementById('betaCurveCanvas'),
+  resetBtn: document.getElementById('betaCurveReset'),
+  gridToggle: document.getElementById('betaCurveGridToggle'),
+  tipEl: document.getElementById('betaCurveTip'),
+  ctx: null,
+  pts: makeExpPts(),
+  dragging: -1,
+  R: 9,
+  grid: true,
+  pdf: new Float32Array(512),
+  cdf: new Float32Array(512),
+  enabled: true,
+  pad: { l: 44, r: 14, t: 16, b: 36 },
+  dpr: Math.max(1, Math.min(2.5, window.devicePixelRatio || 1)),
+};
+
+betaUI.domain = { x0: 0, xn: 1 };
+
+function recomputeDomain() {
+  const P = betaUI.pts.slice().sort((a,b)=>a.x-b.x);
+  betaUI.domain.x0 = P[0].x;
+  betaUI.domain.xn = P[P.length-1].x;
+}
+
+function valueAt(x, pts = betaUI.pts) {
+  const P  = pts.slice().sort((a,b)=>a.x-b.x);
+  const xs = P.map(p=>p.x), ys = P.map(p=>p.y);
+
+  if (x < xs[0] || x > xs[xs.length-1]) return null;
+
+  let i = 1;
+  while (i < xs.length-1 && xs[i] < x) i++;
+  const i0 = Math.max(0, i-2), i1 = i-1, i2 = i, i3 = Math.min(xs.length-1, i+1);
+
+  const x1 = xs[i1], x2 = xs[i2];
+  const u  = (x2 === x1) ? 0 : (x - x1) / (x2 - x1);
+
+  const y0 = ys[i0], y1 = ys[i1], y2 = ys[i2], y3 = ys[i3];
+  const y  = catmullRom(y0, y1, y2, y3, Math.min(1, Math.max(0, u)));
+  return Math.max(0, Math.min(1, y));
+}
+
+function plotRect() {
+  const { l, r, t, b } = betaUI.pad;
+  const W = betaUI.canvas.width, H = betaUI.canvas.height;
+  return { x0: l, y0: t, x1: W - r, y1: H - b, w: W - l - r, h: H - t - b };
+}
+function cx(x) { const pr = plotRect(); return pr.x0 + x * pr.w; }
+function cy(y) { const pr = plotRect(); return pr.y1 - y * pr.h; }
+function ix(px){ const pr = plotRect(); return Math.min(1, Math.max(0, (px - pr.x0) / pr.w)); }
+function iy(py){ const pr = plotRect(); return Math.min(1, Math.max(0, 1 - (py - pr.y0) / pr.h)); }
+
+(function initBetaCurve() {
+  if (!betaUI.canvas) return;
+  betaUI.ctx = betaUI.canvas.getContext('2d');
+  recomputeDomain();
+  drawBetaCurve();
+
+  betaUI.canvas.addEventListener('pointerdown', onDown);
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup',   onUp);
+  betaUI.resetBtn?.addEventListener('click', () => {
+    betaUI.pts = [
+      { x: 0.00, y: 0.70 },
+      { x: 0.25, y: 0.10 },
+      { x: 0.60, y: 0.60 },
+      { x: 1.00, y: 0.95 }
+    ];
+    recomputeDomain();
+    drawBetaCurve();
+  });
+
+  rebuildBetaTables();
+})();
+
+function drawBetaCurve() {
+  const { ctx, pts, R } = betaUI;
+  if (!ctx) return;
+
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+
+  const nTicks = 10;
+  for (let t = 0; t <= nTicks; t++) {
+    const x = t / nTicks;
+    const y = t / nTicks;
+
+    ctx.beginPath();
+    ctx.moveTo(cx(x), cy(0));
+    ctx.lineTo(cx(x), cy(1));
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx(0), cy(y));
+    ctx.lineTo(cx(1), cy(y));
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let t = 0; t <= nTicks; t++) {
+    const x = t / nTicks;
+    ctx.fillText(x.toFixed(1), cx(x), H - 12);
+  }
+
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let t = 0; t <= nTicks; t++) {
+    const y = t / nTicks;
+    ctx.fillText(y.toFixed(1), 30, cy(y));
+  }
+  ctx.restore();
+
+  const P = betaUI.pts.slice().sort((a,b)=>a.x-b.x);
+  if (P.length >= 2) {
+    const x0 = P[0].x;
+    const xn = P[P.length - 1].x;
+
+    const s = 160;
+    ctx.beginPath();
+    let penDown = false;
+    for (let k = 0; k <= s; k++) {
+      const x = x0 + (xn - x0) * (k / s);
+      const p = sampleCurve(betaUI.pts, x);
+      const X = cx(x), Y = cy(p.y);
+      if (!penDown) { ctx.moveTo(X, Y); penDown = true; }
+      else          { ctx.lineTo(X, Y); }
+    }
+    ctx.strokeStyle = '#c7c7c7ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    ctx.beginPath();
+    ctx.arc(cx(p.x), cy(p.y), R, 0, Math.PI * 2);
+    ctx.fillStyle = '#bebebeff';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#474747ff';
+    ctx.stroke();
+  }
+}
+
+function makeExpPts() {
+  const k = 2.2;
+  const f = (x) => (Math.exp(k * x) - 1) / (Math.exp(k) - 1);
+  const xs = [0.00, 0.33, 0.66, 1.00];
+  return xs.map(x => ({ x, y: f(x) }));
+}
+
+function sampleCurve(pts, t) {
+  const P  = pts.slice().sort((a,b)=>a.x-b.x);
+  const xs = P.map(p=>p.x), ys = P.map(p=>p.y);
+
+  const x = Math.min(1, Math.max(0, t));
+
+  if (x <= xs[0]) return { x, y: Math.max(0, Math.min(1, ys[0])) };
+  if (x >= xs[xs.length-1]) return { x, y: Math.max(0, Math.min(1, ys[ys.length-1])) };
+
+  let i = 1;
+  while (i < xs.length-1 && xs[i] < x) i++;
+  const i0 = Math.max(0, i-2), i1 = i-1, i2 = i, i3 = Math.min(xs.length-1, i+1);
+
+  const x1 = xs[i1], x2 = xs[i2];
+  const u = (x2 === x1) ? 0 : (x - x1) / (x2 - x1);
+
+  const y0 = ys[i0], y1 = ys[i1], y2 = ys[i2], y3 = ys[i3];
+  const y  = catmullRom(y0, y1, y2, y3, Math.min(1, Math.max(0, u)));
+
+  return { x, y: Math.max(0, Math.min(1, y)) };
+}
+
+function catmullRom(p0,p1,p2,p3,t) {
+  const t2 = t*t, t3 = t2*t;
+  return 0.5*((2*p1) + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3);
+}
+
+function hitTest(px, py) {
+  for (let i = 0; i < betaUI.pts.length; i++) {
+    const p = betaUI.pts[i];
+    recomputeDomain();
+    const dx = cx(p.x) - px, dy = cy(p.y) - py;
+    if (dx*dx + dy*dy <= betaUI.R*betaUI.R*2) return i;
+  }
+  return -1;
+}
+
+function onDown(e) {
+  const rect = betaUI.canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  betaUI.dragging = hitTest(x, y);
+  if (betaUI.dragging >= 0) e.preventDefault();
+}
+
+function onMove(e) {
+  if (betaUI.dragging < 0) return;
+  const rect = betaUI.canvas.getBoundingClientRect();
+  const x = ix(e.clientX - rect.left);
+  const y = iy(e.clientY - rect.top);
+
+  const i = betaUI.dragging;
+  const L = (i===0) ? 0   : betaUI.pts[i-1].x + 0.001;
+  const R = (i===betaUI.pts.length-1) ? 1 : betaUI.pts[i+1].x - 0.001;
+
+  betaUI.pts[i].x = Math.min(Math.max(x, L), R);
+  betaUI.pts[i].y = Math.min(Math.max(y, 0), 1);
+
+  recomputeDomain();
+  drawBetaCurve();
+  rebuildBetaTables();
+}
+
+function onUp() { 
+  if (betaUI.dragging >= 0) {
+    betaUI.dragging = -1; 
+    rebuildBetaTables();
+  }
+}
+
+function rebuildBetaTables() {
+  const N = betaUI.pdf.length;
+  recomputeDomain();
+  const { x0, xn } = betaUI.domain;
+
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    const x = i / (N - 1);
+    const y = valueAt(x);
+    const w = (y === null) ? 0 : Math.max(0, y);
+    betaUI.pdf[i] = w;
+    sum += w;
+  }
+
+  if (sum <= 0 && xn > x0) {
+    for (let i = 0; i < N; i++) {
+      const x = i / (N - 1);
+      betaUI.pdf[i] = (x >= x0 && x <= xn) ? 1 : 0;
+    }
+    sum = (xn - x0) * (N - 1);
+  }
+
+  if (sum > 0) {
+    for (let i = 0; i < N; i++) betaUI.pdf[i] /= sum;
+  }
+
+  let acc = 0;
+  for (let i = 0; i < N; i++) {
+    acc += betaUI.pdf[i];
+    betaUI.cdf[i] = acc;
+  }
+  betaUI.cdf[N-1] = 1.0;
+}
+
+function sampleBetaFromCurve(u) {
+  if (!betaUI.enabled || !betaUI.cdf) return Math.min(1, Math.max(0, u));
+
+  const N = betaUI.cdf.length;
+  const { x0, xn } = betaUI.domain;
+
+  if (N < 2 || betaUI.cdf[N-1] <= 0 || !(betaUI.cdf[N-1] <= 1)) {
+    const uu = Math.min(1, Math.max(0, u));
+    return x0 + uu * Math.max(0, xn - x0);
+  }
+
+  let lo = 0, hi = N - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (betaUI.cdf[mid] >= u) hi = mid; else lo = mid + 1;
+  }
+  const i = lo;
+  const c0 = (i === 0) ? 0 : betaUI.cdf[i-1];
+  const c1 = betaUI.cdf[i];
+  const t  = (c1 > c0) ? (u - c0) / (c1 - c0) : 0;
+  const x0s = (i === 0) ? 0 : (i-1) / (N - 1);
+  const x1s = i / (N - 1);
+  const x   = x0s + t * (x1s - x0s);
+
+  return Math.min(xn, Math.max(x0, x));
+}
 
 
 //-----------------------------------------PARTICLES----------------------------------------------
@@ -962,7 +1404,7 @@ function keplerUniversalPropagate(r0, v0, dt, mu) {
   const particleLifetimeInput = document.getElementById("particleLifetimeInput");
   const particleCountInput = document.getElementById("particleCountInput");
   const activityExponentInput = document.getElementById("activityExponentInput");
-  const activityScaleInput    = document.getElementById("activityScaleInput");
+  const activityScaleInput = document.getElementById("activityScaleInput");
     
   let baseLifetime = parseFloat(particleLifetimeInput.value);
   let particleCountPerSec = parseInt(particleCountInput.value);
@@ -984,14 +1426,14 @@ function seedParticleAt(index, r_scene, v_scene_per_s, lifeSeconds, beta) {
 
 function sampleConeDirection(axis, halfAngleRad) {
   const zAxis = axis.clone().normalize();
-  const tmp   = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
+  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
   const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
   const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
   const u = Math.random();
   const v = Math.random();
   const cosPhi = 1 - u * (1 - Math.cos(halfAngleRad));
   const sinPhi = Math.sqrt(Math.max(0, 1 - cosPhi * cosPhi));
-  const theta  = 2 * Math.PI * v;
+  const theta = 2 * Math.PI * v;
 
   return zAxis.scale(cosPhi)
     .add(xAxis.scale(sinPhi * Math.cos(theta)))
@@ -1004,9 +1446,9 @@ function rotPQWtoIJK(v, Omega, i, omega) {
   const ci = Math.cos(i),     si = Math.sin(i);
   const co = Math.cos(omega), so = Math.sin(omega);
 
-  let x =  co*v.x - so*v.y;
-  let y =  so*v.x + co*v.y;
-  let z =  v.z;
+  let x = co*v.x - so*v.y;
+  let y = so*v.x + co*v.y;
+  let z = v.z;
 
   let x2 = x;
   let y2 = ci*y - si*z;
@@ -1054,7 +1496,7 @@ function createTailParticle(timeNowJD) {
   const n_scene = sampleCosinePowerHemisphere(sunward_scene, K_COS_Z);
   const surface_scene = cometPos_scene.add(n_scene.scale(R_EMIT_SCENE));
   const dir_scene = sampleConeDirection(n_scene, (EJECT_CONE_DEG * Math.PI) / 180);
-  const beta = generateBeta(betaMin, betaMax, betaSkew);
+  const beta = generateBeta();
   const cosZ = Math.max(BABYLON.Vector3.Dot(n_scene, sunward_scene), 0);
 
   const emissionSpeed_mps =
@@ -1064,7 +1506,7 @@ function createTailParticle(timeNowJD) {
     Math.pow(Math.max(cosZ, 1e-3), EXP_COSZ);
 
   const emissionVel_scene = dir_scene.scale(emissionSpeed_mps * SCALE);
-  const v_scene           = cometVel_scene.add(emissionVel_scene);
+  const v_scene = cometVel_scene.add(emissionVel_scene);
   const r0_scene = surface_scene;
 
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
@@ -1116,6 +1558,12 @@ function createTailParticle(timeNowJD) {
 }}
 
 function generateBeta(min, max, skew) {
+  if (betaUI && betaUI.enabled) {
+  const b = sampleBetaFromCurve(Math.random());
+    if (min === 0 && max === 1) return b;
+  return Math.min(1, Math.max(0, b));
+  }
+
   if (min === max) return min;
   let u = Math.random();
   if (skew !== 0) {
@@ -1127,13 +1575,12 @@ function generateBeta(min, max, skew) {
 
 const NUCLEUS_RADIUS_KM = 1.0;
 const R_EMIT_SCENE = (NUCLEUS_RADIUS_KM * 1000) * SCALE;
-
 const EJECT_CONE_DEG = 30;
 const K_COS_Z = 1.0;
 
 function sampleCosinePowerHemisphere(axis, k) {
   const zAxis = axis.clone().normalize();
-  const tmp   = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
+  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
   const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
   const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
 
@@ -1177,15 +1624,8 @@ function updateOrbitParameters() {
   Omega = parseFloat(longitudeAscendingNodeInput.value) * DEG;
   omega = parseFloat(argumentPerihelionInput.value) * DEG;
   t0 = parseFloat(perihelionDateInput.value);
-  betaMin = parseFloat(betaMinInput.value);
-  betaMax = parseFloat(betaMaxInput.value);
-  betaSkew = parseFloat(betaSkewInput.value);
   activityN = parseFloat(activityExponentInput.value);
   activityK = parseFloat(activityScaleInput.value);
-  betaMin = Math.min(Math.max(betaMin, 0), 1);
-  betaMax = Math.min(Math.max(betaMax, 0), 1);
-
-if (betaMax < betaMin) [betaMin, betaMax] = [betaMax, betaMin];
 
   a = q / (1 - e);
 
@@ -1195,6 +1635,17 @@ if (betaMax < betaMin) [betaMin, betaMax] = [betaMax, betaMin];
   baseLifetime  = parseFloat(particleLifetimeInput.value);
   particleCountPerSec = parseFloat(particleCountInput.value) || 1;
   particleCountPerSec = Math.max(0.01, particleCountPerSec);
+
+if (customCometLabel) {
+  const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
+  if (tb) {
+    if (currentCometSource === "user" || !currentCometName) {
+      tb.text = userModelLabel(e, a / AU, q / AU, i / DEG);
+    } else {
+      tb.text = currentCometName;
+    }
+  }
+}
 
   if (!isFinite(activityN)) activityN = 2;
   if (!isFinite(activityK)) activityK = 1;
@@ -1208,21 +1659,20 @@ window.updateOrbitParameters = updateOrbitParameters;
 
 [
   eccentricityInput,
-  perihelionInput,
+  perihelionInput, 
   inclinationInput,
   longitudeAscendingNodeInput,
   argumentPerihelionInput,
   perihelionDateInput,
-  betaMinInput,
-  betaMaxInput,
-  betaSkewInput,
   particleLifetimeInput,
   particleCountInput,
-  activityExponentInput, 
+  activityExponentInput,
   activityScaleInput,
   activityHalfLifeInput
 ].forEach(input => {
-  input.addEventListener("input", updateOrbitParameters);
+  input.addEventListener("input", () => {
+    window.switchToUser?.();
+  });
 });
 
 let isPaused = false;
@@ -1437,15 +1887,15 @@ if (uiAccum >= UI_PERIOD) {
 const MAX_BIRTHS_PER_FRAME_AT_1_AU = Math.max(0, parseFloat(particleCountInput.value) || 0);
 const cs_now = cometStateAtJD(simulationTimeJD);
 comet.position.copyFrom(cs_now.r_scene);
-const rAU   = comet.position.length() / (SCALE * AU);
+const rAU = comet.position.length() / (SCALE * AU);
 const rSafe = Math.max(1e-3, rAU);
 const Q = Math.max(0, activityK) * ageFactor / Math.pow(rSafe, Math.max(0, activityN));
 const scale = Math.min(1, Q);
 const targetBPF = MAX_BIRTHS_PER_FRAME_AT_1_AU * scale;
-const boxQ     = document.getElementById("actBoxQ");
+const boxQ = document.getElementById("actBoxQ");
 const boxDecay = document.getElementById("actBoxDecay");
 
-if (boxQ)     boxQ.textContent     = `Q: ${Q.toFixed(3)}`;
+if (boxQ) boxQ.textContent = `Q: ${Q.toFixed(3)}`;
 if (boxDecay) boxDecay.textContent = `decay: ${(ageFactor * 100).toFixed(1)}%`;
 
 window.emitCarry = (typeof window.emitCarry !== "undefined") ? window.emitCarry : 0;
@@ -1471,7 +1921,7 @@ while (tailParticles.length &&
 if (!useCompute) {
   for (let i = 0; i < maxUsed; i++) {
     const alive = (expiryByIndex[i] > simSeconds) && cpuSlots[i];
-    const mesh  = particleMeshes[i];
+    const mesh = particleMeshes[i];
 
     if (!alive) {
       if (mesh.isEnabled()) mesh.setEnabled(false);
