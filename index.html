@@ -211,15 +211,6 @@
 
     <label for="perihelionDateInput">Perihelion Date:</label>
     <input type="number" id="perihelionDateInput" step="0.1" value="2457247.5887" />
-
-    <label for="betaMinInput">Beta Minimum (0–1):</label>
-    <input id="betaMinInput" type="number" step="0.001" min="0" max="1" value="0.01" />
-
-    <label for="betaMaxInput">Beta Maximum (0–1):</label>
-    <input id="betaMaxInput" type="number" step="0.001" min="0" max="1" value="0.99" />
-
-    <label for="betaSkewInput">Beta Skewness (-5 to 5):</label>
-    <input id="betaSkewInput" type="number" step="0.1" min="-5" max="5" value="0" />
     
     <label for="particleLifetimeInput">Particle Lifetime:</label>
     <input type="number" id="particleLifetimeInput" step="100" min="1000" value="400" />
@@ -501,6 +492,48 @@
   FPS: --
 </div>
 
+<div id="betaCurvePanel" style="
+  position: fixed;
+  right: 20px;
+  top: 500px;                 /* a bit lower */
+  width: 340px;               /* larger */
+  z-index: 1010;
+  font-family: Inter, system-ui, sans-serif;
+  color: #e7f0ff;
+  background: linear-gradient(180deg, rgba(11, 14, 19, 0.85), rgba(12,16,22,0.85));
+  border: 1px solid rgba(120,150,180,0.35);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px 12px;
+">
+<div style="display:flex; align-items:center; justify-content:space-between;">
+  <div style="font-size:16px; font-weight:600; letter-spacing:0.2px; opacity:.9;">
+    β Gradation Curve
+  </div>
+  <div style="display:flex; gap:6px; align-items:center;">
+  </div>
+</div>
+
+  <div style="position:relative;">
+    <canvas id="betaCurveCanvas"
+      width="340" height="260"
+      style="width:340px;height:260px; background:#0a1016; border-radius:10px; border:1px solid rgba(70,100,130,0.5);">
+    </canvas>
+
+    <div id="betaCurveTip" style="
+      position:absolute; pointer-events:none; transform:translate(-50%,-120%);
+      background: rgba(12,18,26,0.9); color:#dff3ff; font-size:11px;
+      padding: 4px 6px; border-radius:6px; border:1px solid rgba(130,160,190,0.4);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.4); display:none;">
+      β: 0.00 • w: 0.00
+    </div>
+  </div>
+</div>
+
 <style>
 @keyframes spin {
   0% { transform: rotate(0deg); }
@@ -518,61 +551,72 @@
 <script>
   function loadComet(id) {
 
-    const comets = {
-      "67P": {
+const comets = {
+  "67P": {
+    solutions: [
+      {
         e: 0.64090813,
         q: 1.24326564,
         i: 7.04029491,
         omega: 50.135573804414,
         w: 12.798249734157,
         T: 2457247.5887
-      },
-
-      "C2024E1": {
-        e: 1.00048372,
-        q: 0.56171583,
-        i: 75.21807230,
-        omega: 108.38859762573,
-        w: 243.65164937935,
-        T: 2461060.9651
-      },
-
-      "133P": {
-        e: 0.15637284,
-        q: 2.67049635,
-        i: 1.38981783,
-        omega: 160.09954075742,
-        w: 131.90192411846,
-        T: 2460440.7000
-      },
-
-      "3I": {
-        e: 6.13941774,
-        q: 1.35638454,
-        i: 175.11310480,
-        omega: 322.15684249105,
-        w: 128.01051366675,
-        T: 2460977.9814
       }
-    };
+    ]
+  },
 
-    const c = comets[id];
-    const baseJD = 2451544.5;
-    if (!c) return;
+  "C2024E1": {
+    solutions: [{ e: 1.00048372, q: 0.56171583, i: 75.21807230, omega: 108.38859762573, w: 243.65164937935, T: 2461060.9651 }]
+  },
+  "133P": {
+    solutions: [{ e: 0.15637284, q: 2.67049635, i: 1.38981783, omega: 160.09954075742, w: 131.90192411846, T: 2460440.7000 }]
+  },
+  "3I": {
+    solutions: [{ e: 6.13941774, q: 1.35638454, i: 175.11310480, omega: 322.15684249105, w: 128.01051366675, T: 2460977.9814 }]
+  }
+};
 
-    document.getElementById('eccentricityInput').value = c.e;
-    document.getElementById('perihelionInput').value = c.q;
-    document.getElementById('inclinationInput').value = c.i;
-    document.getElementById('longitudeAscendingNodeInput').value = c.omega;
-    document.getElementById('argumentPerihelionInput').value = c.w;
-    document.getElementById('perihelionDateInput').value = c.T;
+window.currentPresetId = id;
+
+function pickSolutionForJD(solutions, jd) {
+  if (!Array.isArray(solutions) || solutions.length === 0) return null;
+  let best = solutions[0], bestAbs = Math.abs((solutions[0].T ?? 0) - jd);
+  for (let k = 1; k < solutions.length; k++) {
+    const d = Math.abs((solutions[k].T ?? 0) - jd);
+    if (d < bestAbs) { best = solutions[k]; bestAbs = d; }
+  }
+  return best;
+}
+    const displayName = {
+      "67P": "67P/Churyumov–Gerasimenko",
+      "C2024E1": "C/2024 E1",
+      "133P": "133P/Elst–Pizarro",
+      "3I": "3I/ATLAS"
+    }[id];
+
+const pack = comets[id];
+if (!pack) return;
+
+const nowJD = (window.simulationTimeJD ?? (pack.solutions[0]?.T ?? 2451544.5));
+const sol = pickSolutionForJD(pack.solutions, nowJD);
+if (!sol) return;
+
+document.getElementById('eccentricityInput').value = sol.e;
+document.getElementById('perihelionInput').value  = sol.q;
+document.getElementById('inclinationInput').value = sol.i;
+document.getElementById('longitudeAscendingNodeInput').value = sol.omega;
+document.getElementById('argumentPerihelionInput').value     = sol.w;
+document.getElementById('perihelionDateInput').value         = sol.T;
 
 window.updateOrbitParameters?.();
 
 const daysBeforeT = 400;
-const jdStart = c.T - daysBeforeT;
+const jdStart = sol.T - daysBeforeT;
+window.setSimTime?.(jdStart, { resetParticles: true, focus: !window._skipInitialFocus });
 
-window.setSimTime?.(jdStart, { resetParticles: true, focus: true });
+window._skipInitialFocus = false;
+
+    window.switchToPreset?.(displayName || id);
   }
 </script>
 
@@ -589,5 +633,4 @@ window.setSimTime?.(jdStart, { resetParticles: true, focus: true });
 </script>
 </body>
 </html>
-
 
