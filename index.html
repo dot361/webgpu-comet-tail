@@ -18,7 +18,6 @@
 #cometButtons button:hover {
   background-color: #666;
 }
-
     html, body {
       margin: 0;
       padding: 0;
@@ -53,12 +52,13 @@
       font-size: 14px;
     }
 
-    #uiOverlay input[type="range"],
-    #uiOverlay input[type="number"],
-    #uiOverlay input[type="text"] {
-      width: 100%;
-      margin-bottom: 6px;
-    }
+      #uiOverlay input[type="range"],
+      #uiOverlay input[type="number"],
+      #uiOverlay input[type="text"],
+      #uiOverlay select {
+        width: 100%;
+        margin-bottom: 6px;
+      }
 
     button {
       margin-top: 10px;
@@ -88,6 +88,107 @@
       font-size: 12px;
       padding: 4px 8px;
     }
+
+:root{
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+#renderCanvas{
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+}
+
+#homeScreen{
+  padding-top: calc(20px + var(--safe-top)) !important;
+  padding-left: calc(20px + var(--safe-left)) !important;
+  padding-right: calc(20px + var(--safe-right)) !important;
+  height: 100dvh !important;
+}
+
+@media (max-width: 900px){
+  html, body{
+    overflow: auto;
+    height: 100%;
+    background: #000;
+  }
+
+  #uiOverlay{
+    position: fixed;
+    top: calc(10px + var(--safe-top));
+    left: calc(10px + var(--safe-left));
+    right: calc(10px + var(--safe-right));
+    max-width: none;
+    max-height: min(55vh, calc(100dvh - 140px));
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  #betaCurvePanel{
+    position: fixed !important;
+    right: calc(10px + var(--safe-right));
+    left: calc(10px + var(--safe-left));
+    bottom: calc(80px + var(--safe-bottom));
+    top: auto;
+    width: auto;
+    max-width: 640px;
+    max-height: 38vh;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  #simTimeDisplay{
+    top: calc(10px + var(--safe-top)) !important;
+  }
+  #statusContainer{
+    top: calc(10px + var(--safe-top)) !important;
+    right: calc(10px + var(--safe-right)) !important;
+  }
+  #pauseContainer{
+    top: calc(48px + var(--safe-top)) !important;
+    right: calc(10px + var(--safe-right)) !important;
+  }
+
+  #axisControl{
+    right: calc(10px + var(--safe-right)) !important;
+    bottom: calc(260px + var(--safe-bottom)) !important;
+    top: auto !important;
+    background: rgba(0,0,0,0.3);
+    backdrop-filter: blur(4px);
+  }
+  #cometButtons{
+    right: calc(10px + var(--safe-right)) !important;
+    bottom: calc(200px + var(--safe-bottom)) !important;
+    top: auto !important;
+    background: rgba(0,0,0,0.3);
+    backdrop-filter: blur(4px);
+  }
+
+  #fpsCounter,
+  #particleCounter,
+  #actBoxQ,
+  #actBoxDecay{
+    right: calc(10px + var(--safe-right)) !important;
+  }
+  #timelineWrapper{
+    padding-bottom: calc(10px + var(--safe-bottom));
+  }
+
+  #uiOverlay, #betaCurvePanel{ font-size: 0.95rem; }
+  #uiOverlay input, #uiOverlay select, #uiOverlay button{ font-size: 0.9rem; }
+}
+
+@media (max-width: 480px){
+  .comet-buttons{ grid-template-columns: 1fr; }
+  #betaCurvePanel{ max-height: 34vh; }
+}
+
   </style>
 </head>
 <body>
@@ -241,6 +342,12 @@
 
   <label for="particleCountInput">Particle Count (per sec):</label>
   <input type="number" id="particleCountInput" step="1" min="1" max="3000" value="100" />
+
+<label for="visModeSelect">Particle color:</label>
+<select id="visModeSelect">
+  <option value="none">None</option>
+  <option value="beta">β value</option>
+</select>
 
   <label for="velocitySlider">Simulation speed: <span id="velocityValue">1</span></label>
   <input type="range" id="velocitySlider" min="0" max="100" value="0" step="1">
@@ -495,8 +602,8 @@
 <div id="betaCurvePanel" style="
   position: fixed;
   right: 20px;
-  top: 500px;                 /* a bit lower */
-  width: 340px;               /* larger */
+  top: 500px;
+  width: 340px;
   z-index: 1010;
   font-family: Inter, system-ui, sans-serif;
   color: #e7f0ff;
@@ -633,4 +740,3 @@ window._skipInitialFocus = false;
 </script>
 </body>
 </html>
-
