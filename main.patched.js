@@ -201,6 +201,8 @@ function jdToDateString(jd) {
   let lastCameraTarget = camera.target.clone();
   let lastCameraRadius = camera.radius;
 
+  camera.panningSensibility = 300;
+
 function setFocusOnComet(on) {
   isCameraFocused = on;
   toggleFocusBtn.textContent = on ? "Unfocus Camera" : "Focus on Comet";
@@ -611,6 +613,7 @@ createStarfield(scene);
   const argumentPerihelionInput = document.getElementById("argumentPerihelionInput");
   const perihelionDateInput = document.getElementById("perihelionDateInput");
   const activityHalfLifeInput = document.getElementById("activityHalfLifeInput");
+  const visModeSelect = document.getElementById("visModeSelect");
 
   let fadeHalfLifeEDays = parseFloat(activityHalfLifeInput?.value) || 1500;
   let e = parseFloat(eccentricityInput.value);
@@ -620,7 +623,7 @@ createStarfield(scene);
   let omega = parseFloat(argumentPerihelionInput.value) * DEG;
   let Omega = parseFloat(longitudeAscendingNodeInput.value) * DEG;
   let t0 = parseFloat(perihelionDateInput.value);
-
+  let visMode = 'none';
   let velocityScale = 1.0;
 
 
@@ -1174,38 +1177,117 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 }
 `;
 
-  const WGSL_RENDER = `
+const WGSL_RENDER = `
 struct Globals {
   viewProj    : mat4x4<f32>,
+
   lifeFadeInv : f32,
-  _pad0       : vec3<f32>,
+  visMode     : u32,
+  pointPx     : f32,
+  _pad0       : f32, 
+  screenSize  : vec2<f32>,
+  _pad1       : vec2<f32>,
+  cometVel    : vec4<f32>,
+  _pad2       : vec4<f32>,
 };
+
 @group(0) @binding(0) var<uniform> globals : Globals;
 @group(0) @binding(1) var<storage, read> posLife : array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> velBeta : array<vec4<f32>>;
 
 struct VSOut {
   @builtin(position) Position : vec4<f32>,
   @location(0) life : f32,
+  @location(1) @interpolate(flat) pid : u32,
+  @location(2) corner : vec2<f32>,
 };
+
+fn cornerOf(v : u32) -> vec2<f32> {
+  let c = v % 6u;
+  switch (c) {
+    case 0u: { return vec2<f32>(-1.0, -1.0); }
+    case 1u: { return vec2<f32>( 1.0, -1.0); }
+    case 2u: { return vec2<f32>( 1.0,  1.0); }
+    case 3u: { return vec2<f32>(-1.0, -1.0); }
+    case 4u: { return vec2<f32>( 1.0,  1.0); }
+    default:{ return vec2<f32>(-1.0,  1.0); }
+  }
+}
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid : u32) -> VSOut {
   var out : VSOut;
-  let p = posLife[vid];
+
+  let pid = vid / 6u;
+  let c   = cornerOf(vid);
+
+  let p = posLife[pid];
   if (p.w <= 0.0) {
     out.Position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     out.life = 0.0;
+    out.pid = pid;
+    out.corner = c;
     return out;
   }
-  out.Position = globals.viewProj * vec4<f32>(p.xyz, 1.0);
-  out.life = p.w;
+
+  var clip = globals.viewProj * vec4<f32>(p.xyz, 1.0);
+  let sx_ndc = (globals.pointPx / globals.screenSize.x) * 2.0;
+  let sy_ndc = (globals.pointPx / globals.screenSize.y) * 2.0;
+  clip.x += sx_ndc * 0.5 * c.x * clip.w;
+  clip.y += sy_ndc * 0.5 * c.y * clip.w;
+
+  out.Position = clip;
+  out.life  = p.w;
+  out.pid   = pid;
+  out.corner = c;
   return out;
 }
 
+fn hsv2rgb(h: f32, s: f32, v: f32) -> vec3<f32> {
+  let c = v * s;
+  let hp = h * 6.0;
+  let x = c * (1.0 - abs((hp % 2.0) - 1.0));
+  var r = 0.0; var g = 0.0; var b = 0.0;
+
+  if      (hp < 1.0) { r=c; g=x; b=0.0; }
+  else if (hp < 2.0) { r=x; g=c; b=0.0; }
+  else if (hp < 3.0) { r=0.0; g=c; b=x; }
+  else if (hp < 4.0) { r=0.0; g=x; b=c; }
+  else if (hp < 5.0) { r=x; g=0.0; b=c; }
+  else               { r=c; g=0.0; b=x; }
+
+  let m = v - c;
+  return vec3<f32>(r+m, g+m, b+m);
+}
+
+fn rainbow(u: f32) -> vec3<f32> {
+  let uu = clamp(u, 0.0, 1.0);
+  return hsv2rgb((1.0 - uu) * 0.7, 1.0, 1.0);
+}
+
 @fragment
-fn fs_main(@location(0) life: f32) -> @location(0) vec4<f32> {
+fn fs_main(
+  @location(0) life : f32,
+  @location(1) @interpolate(flat) pid : u32
+) -> @location(0) vec4<f32> {
   let a = clamp(life * globals.lifeFadeInv, 0.0, 1.0);
-  return vec4<f32>(1.0, 1.0, 1.0, a);
+  if (a <= 0.0) {
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  }
+
+  let vb = velBeta[pid];
+
+  var rgb : vec3<f32>;
+  switch (globals.visMode) {
+    case 2u: { // beta
+      let b = clamp(vb.w, 0.0, 1.0);
+      rgb = rainbow(pow(b, 0.6));
+    }
+    default: {
+      rgb = vec3<f32>(1.0, 1.0, 1.0);
+    }
+  }
+  return vec4<f32>(rgb, a);
 }
 `;
 
@@ -1233,30 +1315,25 @@ function clear() {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  const globalsUBO = device.createBuffer({
-    size: 96,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+const globalsUBO = device.createBuffer({
+  size: 144,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
 
   const computePipeline = device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: WGSL_COMPUTE }), entryPoint: 'main' }
   });
 
-  const renderPipeline = device.createRenderPipeline({
-    layout: 'auto',
-    vertex:   { module: device.createShaderModule({ code: WGSL_RENDER }), entryPoint: 'vs_main' },
-    fragment: { module: device.createShaderModule({ code: WGSL_RENDER }), entryPoint: 'fs_main',
-      targets: [{
-        format,
-        blend: {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        }
-      }]
-    },
-    primitive: { topology: 'point-list' }
-  });
+const renderPipeline = device.createRenderPipeline({
+  layout: 'auto',
+  vertex:   { module: device.createShaderModule({ code: WGSL_RENDER }), entryPoint: 'vs_main' },
+  fragment: { module: device.createShaderModule({ code: WGSL_RENDER }), entryPoint: 'fs_main',
+    targets: [{ format, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                                 alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' } } }]
+  },
+  primitive: { topology: 'triangle-list' }
+});
 
   const computeBG = device.createBindGroup({
     layout: computePipeline.getBindGroupLayout(0),
@@ -1267,13 +1344,14 @@ function clear() {
     ]
   });
 
-  const renderBG = device.createBindGroup({
-    layout: renderPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: globalsUBO } },
-      { binding: 1, resource: { buffer: posLifeGPU } },
-    ]
-  });
+const renderBG = device.createBindGroup({
+  layout: renderPipeline.getBindGroupLayout(0),
+  entries: [
+    { binding: 0, resource: { buffer: globalsUBO } },
+    { binding: 1, resource: { buffer: posLifeGPU } },
+    { binding: 2, resource: { buffer: velBetaGPU } },
+  ]
+});
 
 const seedScratch = new Float32Array(4);
 function seed(index, pos, vel, lifeSeconds, beta) {
@@ -1286,14 +1364,33 @@ function seed(index, pos, vel, lifeSeconds, beta) {
   device.queue.writeBuffer(velBetaGPU, off, seedScratch.buffer);
 }
 
-  function update(dtSeconds, maxCount, viewProjMatrixFloat32Array) {
+  function update(dtSeconds, maxCount, viewProjMatrixFloat32Array, cometVel_scene) {
 device.queue.writeBuffer(simUBO, 0, new Float32Array([dtSeconds]));
 device.queue.writeBuffer(simUBO, 4, new Uint32Array([maxCount >>> 0]));
 device.queue.writeBuffer(simUBO, 8, new Float32Array([MU_SCENE]));
+device.queue.writeBuffer(globalsUBO, 0, viewProjMatrixFloat32Array);
 
-    const lifeFadeInv = 1 / Math.max(1e-6, baseLifetime * SECONDS_PER_DAY);
-    device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);
-    device.queue.writeBuffer(globalsUBO, 64, new Float32Array([lifeFadeInv, 0, 0, 0]));
+
+const lifeFadeInv = 1 / Math.max(1e-6, baseLifetime * SECONDS_PER_DAY);
+const rw = engine.getRenderWidth(true);
+const rh = engine.getRenderHeight(true);
+
+const modeIndex =
+  visMode === 'beta' ? 2 :
+  0;
+
+const POINT_PX = 3.0;
+
+device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);
+device.queue.writeBuffer(globalsUBO, 64, new Float32Array([lifeFadeInv]));
+device.queue.writeBuffer(globalsUBO, 68, new Uint32Array([modeIndex]));
+device.queue.writeBuffer(globalsUBO, 72, new Float32Array([POINT_PX]));
+device.queue.writeBuffer(globalsUBO, 80, new Float32Array([rw, rh]));
+
+device.queue.writeBuffer(globalsUBO, 96, new Float32Array([
+  cometVel_scene.x, cometVel_scene.y, cometVel_scene.z, 0
+]));
+
     const enc = device.createCommandEncoder();
 
     {
@@ -1317,7 +1414,8 @@ device.queue.writeBuffer(simUBO, 8, new Float32Array([MU_SCENE]));
       });
       pass.setPipeline(renderPipeline);
       pass.setBindGroup(0, renderBG);
-      pass.draw(maxCount, 1, 0, 0);
+      pass.draw(maxCount * 6, 1, 0, 0);
+
       pass.end();
     }
 
@@ -1546,7 +1644,7 @@ function createTailParticle(timeNowJD) {
 
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
-  cpuSlots[idx] = { t0JD: timeNowJD, r0_m, v0_mps, mu: mu_p, lifeSeconds };
+  cpuSlots[idx] = { t0JD: timeNowJD, r0_m, v0_mps, mu: mu_p, lifeSeconds, beta };
   expiryByIndex[idx] = simSeconds + lifeSeconds;
   gpuWriteCursor = (gpuWriteCursor + 1) % MAX_PARTICLES;
   if (idx + 1 > maxUsed) maxUsed = idx + 1;
@@ -1614,6 +1712,27 @@ velocitySlider.addEventListener("input", () => {
   velocityValueLabel.textContent = simulationSpeed.toFixed(2) + "×";
 });
 
+visModeSelect?.addEventListener('change', () => { visMode = visModeSelect.value; });
+
+function hsvToRgb(h, s, v) {
+  let c = v * s, x = c * (1 - Math.abs(((h * 6) % 2) - 1)), m = v - c;
+  let r=0,g=0,b=0;
+  if      (h < 1/6) { r=c; g=x; b=0; }
+  else if (h < 2/6) { r=x; g=c; b=0; }
+  else if (h < 3/6) { r=0; g=c; b=x; }
+  else if (h < 4/6) { r=0; g=x; b=c; }
+  else if (h < 5/6) { r=x; g=0; b=c; }
+  else              { r=c; g=0; b=x; }
+  return new BABYLON.Color3(r+m, g+m, b+m);
+}
+
+function colorFromUnit(u) {
+  const clamp = (x)=>Math.max(0,Math.min(1,x));
+  u = clamp(u);
+  const rgb = hsvToRgb((1.0 - u) * 0.7, 1.0, 1.0);
+  return rgb;
+}
+
 const fpsCounter = document.getElementById("fpsCounter");
 const particleCounter = document.getElementById("particleCounter");
 
@@ -1627,6 +1746,9 @@ function updateOrbitParameters() {
   activityN = parseFloat(activityExponentInput.value);
   activityK = parseFloat(activityScaleInput.value);
 
+  fadeHalfLifeEDays = parseFloat(activityHalfLifeInput.value);
+  if (!isFinite(fadeHalfLifeEDays) || fadeHalfLifeEDays <= 0) fadeHalfLifeEDays = 1500;
+
   a = q / (1 - e);
 
   if (orbitLine) orbitLine.dispose();
@@ -1636,23 +1758,23 @@ function updateOrbitParameters() {
   particleCountPerSec = parseFloat(particleCountInput.value) || 1;
   particleCountPerSec = Math.max(0.01, particleCountPerSec);
 
-if (customCometLabel) {
-  const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
-  if (tb) {
-    if (currentCometSource === "user" || !currentCometName) {
-      tb.text = userModelLabel(e, a / AU, q / AU, i / DEG);
-    } else {
-      tb.text = currentCometName;
+  if (customCometLabel) {
+    const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
+    if (tb) {
+      if (currentCometSource === "user" || !currentCometName) {
+        tb.text = userModelLabel(e, a / AU, q / AU, i / DEG);
+      } else {
+        tb.text = currentCometName;
+      }
     }
   }
-}
 
   if (!isFinite(activityN)) activityN = 2;
   if (!isFinite(activityK)) activityK = 1;
   activityN = Math.max(0, Math.min(6, activityN));
   activityK = Math.max(0, activityK);
-  resetExposure();
 
+  resetExposure();
 }
 
 window.updateOrbitParameters = updateOrbitParameters;
@@ -1672,6 +1794,7 @@ window.updateOrbitParameters = updateOrbitParameters;
 ].forEach(input => {
   input.addEventListener("input", () => {
     window.switchToUser?.();
+    updateOrbitParameters();
   });
 });
 
@@ -1737,7 +1860,8 @@ if (rawParticles) {
   scene.onAfterRenderObservable.add(() => {
     const dtSeconds = isPaused ? 0 : (engine.getDeltaTime() / 1000) * simulationSpeed;
     const vpF32 = new Float32Array(scene.getTransformMatrix().m);
-    rawParticles.update(dtSeconds, Math.max(1, maxUsed), vpF32);
+    const cs_now_for_gpu = cometStateAtJD(simulationTimeJD);
+    rawParticles.update(dtSeconds, Math.max(1, maxUsed), vpF32, cs_now_for_gpu.v_scene_per_s);
   });
 }
 
@@ -1886,6 +2010,8 @@ if (uiAccum >= UI_PERIOD) {
 
 const MAX_BIRTHS_PER_FRAME_AT_1_AU = Math.max(0, parseFloat(particleCountInput.value) || 0);
 const cs_now = cometStateAtJD(simulationTimeJD);
+const cometVel_scene = cs_now.v_scene_per_s;
+const cometVel_mps = cometVel_scene.scale(1 / SCALE);
 comet.position.copyFrom(cs_now.r_scene);
 const rAU = comet.position.length() / (SCALE * AU);
 const rSafe = Math.max(1e-3, rAU);
@@ -1931,19 +2057,37 @@ if (!useCompute) {
     const slot = cpuSlots[i];
     const dt = (simulationTimeJD - slot.t0JD) * SECONDS_PER_DAY;
 
-    let rScene;
+    let rScene, v_mps;
     if (dt <= 0) {
       rScene = slot.r0_m.scale(SCALE);
+      v_mps  = slot.v0_mps;
     } else if (slot.mu <= 0) {
       rScene = slot.r0_m.add(slot.v0_mps.scale(dt)).scale(SCALE);
+      v_mps  = slot.v0_mps;
     } else {
-      rScene = keplerUniversalPropagate(slot.r0_m, slot.v0_mps, dt, slot.mu).r.scale(SCALE);
+      const rv = keplerUniversalPropagate(slot.r0_m, slot.v0_mps, dt, slot.mu);
+      rScene = rv.r.scale(SCALE);
+      v_mps  = rv.v;
     }
+
     mesh.position.copyFrom(rScene);
 
     const lifeLeft = Math.max(0, expiryByIndex[i] - simSeconds);
-    const a = Math.max(0, Math.min(1, lifeLeft / slot.lifeSeconds));
-    if (mesh.material) mesh.material.alpha = 0.5 * a;
+    const lifeFrac = Math.max(0, Math.min(1, lifeLeft / slot.lifeSeconds));
+    if (mesh.material) mesh.material.alpha = 0.5 * lifeFrac;
+
+switch (visMode) {
+  case 'none': {
+    if (mesh.material) mesh.material.emissiveColor = new BABYLON.Color3(1,1,1);
+    break;
+  }
+  case 'beta': {
+    const b = Math.max(0, Math.min(1, slot.beta ?? 0));
+    const u = Math.pow(b, 0.6);
+    if (mesh.material) mesh.material.emissiveColor = colorFromUnit(u);
+    break;
+  }
+}
 
     if (!mesh.isEnabled()) mesh.setEnabled(true);
   }
@@ -1963,3 +2107,4 @@ earthMesh.position.copyFrom(earthPos);
 
   window.setViewAxis = setViewAxis;
 }
+
