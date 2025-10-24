@@ -2,8 +2,8 @@ async function startSimulation() {
 
 
 //-----------------------------SETUP--------------------------------
-//Initialize rendering engine (WebGPU if available else WebGL)
-//Create the scene and expose a small GPU status badge
+//Initialize Babylon (WebGPU if available, else WebGL) and detect compute support
+//Build the scene, GPU status badge, and optional FORCE mode overrides (webgl/cpu)
 
 
 const canvas = document.getElementById("renderCanvas");
@@ -78,8 +78,9 @@ const useCompute = (engine instanceof BABYLON.WebGPUEngine) && hasCompute;
 
 //---------------------------TIME SETUP-----------------------------------
 //Time is tracked in Julian Days (JD)
-//The UI lets you slide on the timeline when paused
-//The simulation speed scales how fast JD advances
+//When paused, the timeline slider scrubs JD
+//The speed slider scales how fast JD advances
+//UI state is synced periodically to avoid excessive DOM updates
 
 
 let simulationTimeJD = 2451544.5;
@@ -186,9 +187,10 @@ function jdToDateString(jd) {
 
 
 //----------------------------------CAMERA------------------------------------
-//Rotate camera
-//"Focus on Comet" button setup
-//Helpers to snap to principal axes
+//ArcRotate camera with zoom/pan
+//Optional “Focus on Comet” lock to the active comet mesh
+//“Unfocus” restores the previous target/radius
+//Helpers to snap view to +x/+y/+z axes when not focused
 
 
   const camera = new BABYLON.ArcRotateCamera("orbitCamera", Math.PI / 2, Math.PI / 3, 100, BABYLON.Vector3.Zero(), scene);
@@ -250,12 +252,14 @@ function setViewAxis(axis) {
 
 
 //---------------------------------------ELEMENTS---------------------------------------
-//Define unit constants and Earth orbital parameters
-//Draw Planet orbits
-//Draw Planets, Sun and star field
+//Define units/constants and Kepler helpers for planets
+//Draw planetary orbits + labeled planet meshes
+//Draw Sun and background star field
+//Earth is drawn separately so it can be referenced for labels or updates
 
 
 //PLANETS
+//Planet orbits are sampled in their orbital planes then rotated by Ω, i, ω into the scene
 
 
 const AU = 1.495978707e11;
@@ -399,7 +403,6 @@ function activatePresetComet(mesh) {
     const tb = customCometLabel.children?.find?.(c => c instanceof BABYLON.GUI.TextBlock);
     if (tb) tb.text = currentCometName;
   }
-
   setFocusOnComet(true);
 }
 
@@ -556,6 +559,7 @@ drawPlanetOrbit(scene, earthEl, 1200, planetColors.Earth);
 
 
 //SUN
+//Simple emissive sphere with a glow layer used as the light source
 
 
   const sun = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 0.8 }, scene);
@@ -568,6 +572,7 @@ drawPlanetOrbit(scene, earthEl, 1200, planetColors.Earth);
 
 
 //STAR FIELD
+//Static PointsCloudSystem sphere for distant stars
 
 
 function createStarfield(scene, starCount = 8000, radius = 15000) {
@@ -602,8 +607,9 @@ createStarfield(scene);
 
 
 //--------------------------------------COMET-----------------------------------------------
-//Read comet orbital elements from UI inputs
-//Define physics constants and functions to compute comet's and earth's positions
+//Read comet orbital elements from UI and create a labeled comet mesh
+//Provide preset comet activation + label updates
+//Propagate comet state for any JD
 
 
   const eccentricityInput = document.getElementById("eccentricityInput");
@@ -628,8 +634,9 @@ createStarfield(scene);
 
 
 //-------------------------------------COMETS ORBIT---------------------------------------------
-//Draw the comet’s orbit curve and "Toggle orbit" button setup
-//Create the comet mesh
+//Sample and draw the comet’s orbit path (elliptic/parabolic/hyperbolic cases handled)
+//“Toggle orbit” shows/hides the curve
+//Creates the comet nucleus mesh
 
 
 let orbitLine = null;
@@ -1064,9 +1071,10 @@ function sampleBetaFromCurve(u) {
 
 
 //-----------------------------------------PARTICLES----------------------------------------------
-//Define particle and ejection parameters
-//Set up WGSL shaders
-//Compute and render particles
+//Ejection parameters and beta distribution (editable spline) drive particle seeding
+//WebGPU path: compute shader integrates r,v with solar gravity scaled by β
+//Colors by mode (none/beta/age/dist/vrel) using WebGPU
+//WebGL fallback: per-particle propagation + identical coloring
 
 
 const V0_EJECTION_MS = 400;
@@ -1074,6 +1082,9 @@ const EXP_BETA = 0.5;
 const EXP_RH = -0.5;
 const EXP_COSZ = 2.0;
 const ACTIVE_R_AU = 3.0;
+let distVisMaxScene = 2;
+let vRelMax_kms = 50;
+let vRelMax_scene = (vRelMax_kms * 1000) * SCALE;
 
 let cumulativeExposure = 0;
 function resetExposure() { cumulativeExposure = 0; }
@@ -1184,12 +1195,20 @@ struct Globals {
   lifeFadeInv : f32,
   visMode     : u32,
   pointPx     : f32,
-  _pad0       : f32, 
+  _pad0       : f32,
+
   screenSize  : vec2<f32>,
   _pad1       : vec2<f32>,
+
   cometVel    : vec4<f32>,
-  _pad2       : vec4<f32>,
+
+  cometPos    : vec4<f32>,
+
+  distMax     : f32,
+  vRelMax     : f32,
+  _pad2       : vec2<f32>,
 };
+
 
 @group(0) @binding(0) var<uniform> globals : Globals;
 @group(0) @binding(1) var<storage, read> posLife : array<vec4<f32>>;
@@ -1231,6 +1250,7 @@ fn vs_main(@builtin(vertex_index) vid : u32) -> VSOut {
   }
 
   var clip = globals.viewProj * vec4<f32>(p.xyz, 1.0);
+
   let sx_ndc = (globals.pointPx / globals.screenSize.x) * 2.0;
   let sy_ndc = (globals.pointPx / globals.screenSize.y) * 2.0;
   clip.x += sx_ndc * 0.5 * c.x * clip.w;
@@ -1265,6 +1285,11 @@ fn rainbow(u: f32) -> vec3<f32> {
   return hsv2rgb((1.0 - uu) * 0.7, 1.0, 1.0);
 }
 
+fn mix3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+  let tt = clamp(t, 0.0, 1.0);
+  return a + (b - a) * tt;
+}
+
 @fragment
 fn fs_main(
   @location(0) life : f32,
@@ -1275,14 +1300,35 @@ fn fs_main(
     return vec4<f32>(0.0, 0.0, 0.0, 0.0);
   }
 
+  let p  = posLife[pid];
   let vb = velBeta[pid];
 
   var rgb : vec3<f32>;
   switch (globals.visMode) {
-    case 2u: { // beta
+    case 2u: {
       let b = clamp(vb.w, 0.0, 1.0);
       rgb = rainbow(pow(b, 0.6));
     }
+    case 3u: {
+      let ageFrac = 1.0 - a;
+      let red  = vec3<f32>(1.0, 0.0, 0.0);
+      let blue = vec3<f32>(0.0, 0.0, 1.0);
+      rgb = mix3(red, blue, ageFrac);
+    }
+    case 4u: {
+      let d = distance(p.xyz, globals.cometPos.xyz);
+      let u = clamp(d / max(globals.distMax, 1e-6), 0.0, 1.0);
+      let nearCol = vec3<f32>(1.0, 0.95, 0.20);
+      let farCol  = vec3<f32>(0.10, 0.20, 1.00);
+      rgb = mix3(nearCol, farCol, u);
+    }
+    case 5u: {
+      let v  = velBeta[pid].xyz;
+      let dv = length(v - globals.cometVel.xyz);
+      let u  = clamp(dv / max(globals.vRelMax, 1e-9), 0.0, 1.0);
+      rgb = rainbow(u);
+    }
+
     default: {
       rgb = vec3<f32>(1.0, 1.0, 1.0);
     }
@@ -1316,7 +1362,7 @@ function clear() {
   });
 
 const globalsUBO = device.createBuffer({
-  size: 144,
+  size: 160,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
@@ -1364,31 +1410,42 @@ function seed(index, pos, vel, lifeSeconds, beta) {
   device.queue.writeBuffer(velBetaGPU, off, seedScratch.buffer);
 }
 
-  function update(dtSeconds, maxCount, viewProjMatrixFloat32Array, cometVel_scene) {
-device.queue.writeBuffer(simUBO, 0, new Float32Array([dtSeconds]));
-device.queue.writeBuffer(simUBO, 4, new Uint32Array([maxCount >>> 0]));
-device.queue.writeBuffer(simUBO, 8, new Float32Array([MU_SCENE]));
-device.queue.writeBuffer(globalsUBO, 0, viewProjMatrixFloat32Array);
+function update(dtSeconds, maxCount, viewProjMatrixFloat32Array, cometVel_scene, cometPos_scene) {
 
+  device.queue.writeBuffer(simUBO, 0, new Float32Array([dtSeconds]));
+  device.queue.writeBuffer(simUBO, 4, new Uint32Array([maxCount >>> 0]));
+  device.queue.writeBuffer(simUBO, 8, new Float32Array([MU_SCENE]));
+  device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);
 
-const lifeFadeInv = 1 / Math.max(1e-6, baseLifetime * SECONDS_PER_DAY);
-const rw = engine.getRenderWidth(true);
-const rh = engine.getRenderHeight(true);
+  const lifeFadeInv = 1 / Math.max(1e-6, baseLifetime * SECONDS_PER_DAY);
+  const rw = engine.getRenderWidth(true);
+  const rh = engine.getRenderHeight(true);
 
 const modeIndex =
   visMode === 'beta' ? 2 :
+  visMode === 'age'  ? 3 :
+  visMode === 'dist' ? 4 :
+  visMode === 'vrel' ? 5 :
   0;
 
-const POINT_PX = 3.0;
+  const POINT_PX = 3.0;
 
-device.queue.writeBuffer(globalsUBO, 0,  viewProjMatrixFloat32Array);
-device.queue.writeBuffer(globalsUBO, 64, new Float32Array([lifeFadeInv]));
-device.queue.writeBuffer(globalsUBO, 68, new Uint32Array([modeIndex]));
-device.queue.writeBuffer(globalsUBO, 72, new Float32Array([POINT_PX]));
-device.queue.writeBuffer(globalsUBO, 80, new Float32Array([rw, rh]));
-
+  device.queue.writeBuffer(globalsUBO, 64, new Float32Array([lifeFadeInv]));
+  device.queue.writeBuffer(globalsUBO, 68, new Uint32Array([modeIndex]));
+  device.queue.writeBuffer(globalsUBO, 72, new Float32Array([POINT_PX]));
+  device.queue.writeBuffer(globalsUBO, 80, new Float32Array([rw, rh]));
 device.queue.writeBuffer(globalsUBO, 96, new Float32Array([
   cometVel_scene.x, cometVel_scene.y, cometVel_scene.z, 0
+]));
+
+device.queue.writeBuffer(globalsUBO, 112, new Float32Array([
+  cometPos_scene.x, cometPos_scene.y, cometPos_scene.z, 0
+]));
+
+device.queue.writeBuffer(globalsUBO, 128, new Float32Array([
+  distVisMaxScene,
+  vRelMax_scene,
+  0, 0
 ]));
 
     const enc = device.createCommandEncoder();
@@ -1696,9 +1753,9 @@ function sampleCosinePowerHemisphere(axis, k) {
 
 
 //------------------------------------USER INTERFACE---------------------------------
-//Wire up speed slider, pause button, and all input fields.
-//Rebuild orbit parameters when inputs change
-//Set up keyboard shortcuts
+//Wire up speed/pause/vis-mode and all inputs
+//Changing inputs rebuilds orbit/labels
+//Provide keyboard shortcuts for pause, focus, axis snaps, etc.
 
 
 const velocitySlider = document.getElementById("velocitySlider");
@@ -1861,7 +1918,14 @@ if (rawParticles) {
     const dtSeconds = isPaused ? 0 : (engine.getDeltaTime() / 1000) * simulationSpeed;
     const vpF32 = new Float32Array(scene.getTransformMatrix().m);
     const cs_now_for_gpu = cometStateAtJD(simulationTimeJD);
-    rawParticles.update(dtSeconds, Math.max(1, maxUsed), vpF32, cs_now_for_gpu.v_scene_per_s);
+rawParticles.update(
+  dtSeconds,
+  Math.max(1, maxUsed),
+  vpF32,
+  cs_now_for_gpu.v_scene_per_s,
+  cs_now_for_gpu.r_scene
+);
+
   });
 }
 
@@ -1956,13 +2020,11 @@ if (rawParticles) {
 
 
 //-----------------------------RENDER LOOP-------------------------------
-//Advance simulated time
-//Update timeline labels and time
-//Recompute comet position
-//Emit particles based on interval logic
-//Update Earth position
-//Update FPS/particle counters
-//Render the Babylon scene
+//Advance simulated time, maintain cumulative exposure, and update UI
+//Emit particles based on activity Q(rh) with a per-frame budget
+//Delete old particles
+//Update planets/Earth each frame
+//Draw tail via GPU (or CPU fallback) and render scene
 
 
 engine.runRenderLoop(() => {
@@ -2087,6 +2149,30 @@ switch (visMode) {
     if (mesh.material) mesh.material.emissiveColor = colorFromUnit(u);
     break;
   }
+  case 'age': {
+    const lifeFrac = Math.max(0, Math.min(1, lifeLeft / slot.lifeSeconds));
+    const age = 1 - lifeFrac;
+    if (mesh.material) mesh.material.emissiveColor = new BABYLON.Color3(1 - age, 0, age);
+    break;
+  }
+  case 'dist': {
+    const d = BABYLON.Vector3.Distance(mesh.position, comet.position);
+    const u = Math.min(1, Math.max(0, d / Math.max(distVisMaxScene, 1e-6)));
+    const nearCol = new BABYLON.Color3(1.0, 0.95, 0.20);
+    const farCol  = new BABYLON.Color3(0.10, 0.20, 1.00);
+    const r = nearCol.r + (farCol.r - nearCol.r) * u;
+    const g = nearCol.g + (farCol.g - nearCol.g) * u;
+    const b = nearCol.b + (farCol.b - nearCol.b) * u;
+    if (mesh.material) mesh.material.emissiveColor = new BABYLON.Color3(r, g, b);
+    break;
+  }
+  case 'vrel': {
+  const dv = v_mps.subtract(cometVel_mps).length();
+  const u = Math.min(1, Math.max(0, (dv / (vRelMax_kms * 1000))));
+  const col = colorFromUnit(u);
+  if (mesh.material) mesh.material.emissiveColor = col;
+  break;
+}
 }
 
     if (!mesh.isEnabled()) mesh.setEnabled(true);
@@ -2107,4 +2193,3 @@ earthMesh.position.copyFrom(earthPos);
 
   window.setViewAxis = setViewAxis;
 }
-
