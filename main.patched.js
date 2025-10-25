@@ -507,7 +507,7 @@ const planetColors = {
   Mercury: new BABYLON.Color3(0.65, 0.66, 0.68),
   Venus:   new BABYLON.Color3(0.95, 0.85, 0.6),
   Earth:   new BABYLON.Color3(0.2, 0.5, 1.0),
-  Mars:    new BABYLON.Color3(1.0, 0.45, 0.3),
+  Mars:    new BABYLON.Color3(0.776, 0.361, 0.227),
   Jupiter: new BABYLON.Color3(0.65, 0.45, 0.25),
   Saturn:  new BABYLON.Color3(0.95, 0.9, 0.7),
   Uranus:  new BABYLON.Color3(0.7, 0.9, 1.0),
@@ -2193,3 +2193,4 @@ earthMesh.position.copyFrom(earthPos);
 
   window.setViewAxis = setViewAxis;
 }
+
