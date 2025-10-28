@@ -310,34 +310,24 @@
     <label for="argumentPerihelionInput">Argument of Perihelion (ω, °):</label>
     <input type="number" id="argumentPerihelionInput" step="0.01" value="12.798249734157" />
 
-    <label for="perihelionDateInput">Perihelion Date:</label>
+    <label for="perihelionDateInput">Perihelion Date (JD):</label>
     <input type="number" id="perihelionDateInput" step="0.1" value="2457247.5887" />
     
-    <label for="particleLifetimeInput">Particle Lifetime:</label>
-    <input type="number" id="particleLifetimeInput" step="100" min="1000" value="400" />
+    <label for="particleLifetimeInput">Particle Lifetime (days):</label>
+    <input type="number" id="particleLifetimeInput" step="1" min="1" value="250" />
 
     <label>
       Activity exponent n (Q = k / r^n):
       <input id="activityExponentInput" type="number" step="0.1" min="0" max="6" value="4">
     </label>
     <label>
-      Activity scale k @ 1 AU:
+      Activity scale k (at 1 AU):
       <input id="activityScaleInput" type="number" step="0.1" min="0" value="1">
     </label>
 
 <div class="activity-field">
   <label for="activityHalfLifeInput">Activity decay half-life (e-days):</label>
   <input id="activityHalfLifeInput" type="number" step="10" min="1" value="1500">
-</div>
-
-<div class="activity-field">
-  <label for="activityExponentInput">Activity exponent n (Q = k / r^n):</label>
-  <input id="activityExponentInput" type="number" step="0.1" min="0" max="6" value="4">
-</div>
-
-<div class="activity-field">
-  <label for="activityScaleInput">Activity scale k @ 1 AU:</label>
-  <input id="activityScaleInput" type="number" step="0.1" min="0" value="1">
 </div>
 
   <label for="particleCountInput">Particle Count (per sec):</label>
@@ -366,6 +356,7 @@
   font-family: sans-serif;
 ">
 </div>
+
   <button style="
     background: none;
     border: 1.5px solid #ccc;
@@ -395,9 +386,7 @@
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
   " id="updateViewBtn" disabled>Update Position</button>
-
 </div>
-  </div>
 
 <div id="statusContainer" style="
   position: fixed;
