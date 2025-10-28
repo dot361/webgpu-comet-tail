@@ -1077,10 +1077,6 @@ function sampleBetaFromCurve(u) {
 //WebGL fallback: per-particle propagation + identical coloring
 
 
-const V0_EJECTION_MS = 400;
-const EXP_BETA = 0.5;
-const EXP_RH = -0.5;
-const EXP_COSZ = 2.0;
 const ACTIVE_R_AU = 3.0;
 let distVisMaxScene = 2;
 let vRelMax_kms = 50;
@@ -1163,12 +1159,11 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   }
 
   let rmag  = max(1e-6, length(r));
-  let muEst = sim.muScene * max(1e-4, 1.0 - 0.5 * clamp(b, 0.0, 1.0));
+  let muEst = sim.muScene * max(1e-6, 1.0 - clamp(b, 0.0, 1.0));
   let tDyn  = sqrt((rmag * rmag * rmag) / muEst);
   let hMax  = 0.05 * tDyn;
-  var steps = i32(ceil(dt / hMax));
-  if (steps < 1) { steps = 1; }
-  if (steps > 8) { steps = 8; }
+  var steps = i32(ceil(dt / (0.1 * tDyn)));
+  steps = clamp(steps, 1, 8);
   let h = dt / f32(steps);
 
   var a = accel(r, sim.muScene, b);
@@ -1647,22 +1642,10 @@ function createTailParticle(timeNowJD) {
   const cometPos_scene = cs.r_scene;
   const cometVel_scene = cs.v_scene_per_s;
   const rhAU = cs.rh_AU;
-  const sunward_scene = cometPos_scene.clone().scale(-1).normalize();
-  const n_scene = sampleCosinePowerHemisphere(sunward_scene, K_COS_Z);
-  const surface_scene = cometPos_scene.add(n_scene.scale(R_EMIT_SCENE));
-  const dir_scene = sampleConeDirection(n_scene, (EJECT_CONE_DEG * Math.PI) / 180);
-  const beta = generateBeta();
-  const cosZ = Math.max(BABYLON.Vector3.Dot(n_scene, sunward_scene), 0);
+const beta = generateBeta();
 
-  const emissionSpeed_mps =
-    V0_EJECTION_MS *
-    Math.pow(Math.max(beta, 1e-6), EXP_BETA) *
-    Math.pow(Math.max(rhAU, 1e-6), EXP_RH) *
-    Math.pow(Math.max(cosZ, 1e-3), EXP_COSZ);
-
-  const emissionVel_scene = dir_scene.scale(emissionSpeed_mps * SCALE);
-  const v_scene = cometVel_scene.add(emissionVel_scene);
-  const r0_scene = surface_scene;
+const v_scene = cometVel_scene.clone();
+const r0_scene = cometPos_scene.clone();
 
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
