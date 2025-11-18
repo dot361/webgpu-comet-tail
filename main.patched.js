@@ -724,7 +724,7 @@ function drawOrbit(scene, segments = 800) {
   -0.00387641697
 );
   let cometMesh = null;
-  const comet = BABYLON.MeshBuilder.CreateSphere("comet", { diameter: 0.1 }, scene);
+  const comet = BABYLON.MeshBuilder.CreateSphere("comet", { diameter: 0.2 }, scene);
   cometMesh = comet;
   cometMesh.position = cometPos;
   const cometMaterial = new BABYLON.StandardMaterial("cometMat", scene);
@@ -756,54 +756,6 @@ window.switchToUser = function() {
 };
 
 labelPresetComets(scene);
-
-const ACTIVE_R_AU = 3.0;
-let distVisMaxScene = 2;
-let vRelMax_kms = 50;
-let vRelMax_scene = (vRelMax_kms * 1000) * SCALE;
-
-const SAT_SIZE_M = 1.5;
-const SAT_VISUAL_SCALE = 5e7;
-const SAT_SIZE_SCENE = SAT_SIZE_M * SCALE * SAT_VISUAL_SCALE;
-
-const SAT_ORBIT_RADIUS_KM = 2_000_000;
-const SAT_ORBIT_PERIOD_H  = 12;
-
-const SAT_R_SCENE = SAT_ORBIT_RADIUS_KM * 1000 * SCALE;
-const SAT_OMEGA   = (2 * Math.PI) / (SAT_ORBIT_PERIOD_H * 3600);
-
-let satPlaneN = new BABYLON.Vector3(0, 0, 1);
-const SAT_PLANE_SMOOTH_TAU = 1.0;
-
-function lerpNormalize(a, b, t) {
-  const out = BABYLON.Vector3.Lerp(a, b, t);
-  return out.normalize();
-}
-
-const satMesh = BABYLON.MeshBuilder.CreateBox("satellite", { size: SAT_SIZE_SCENE }, scene);
-const satMat  = new BABYLON.StandardMaterial("satMat", scene);
-satMat.diffuseColor  = new BABYLON.Color3(1, 0.2, 0.2);
-satMat.emissiveColor = new BABYLON.Color3(0.9, 0.1, 0.1);
-satMesh.material = satMat;
-satMesh.isPickable = true;
-
-(function initSatPose() {
-  const sunDir = comet.position.clone().negate().normalize();
-  satPlaneN = sunDir.length() > 0.5 ? sunDir : new BABYLON.Vector3(0,0,1);
-  const { ex, ey } = makePlaneBasis(satPlaneN);
-  const startOff = ex.scale(SAT_R_SCENE);
-  satMesh.position.copyFrom(comet.position.add(startOff));
-  satMesh.rotationQuaternion = BABYLON.Quaternion.Identity();
-})();
-
-function makePlaneBasis(n) {
-  const tmp = Math.abs(n.x) < 0.9 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
-  const ex = BABYLON.Vector3.Cross(n, tmp).normalize();
-  const ey = BABYLON.Vector3.Cross(n, ex).normalize();
-  return { ex, ey };
-}
-
-let satPhase = 0;
 
 if (typeof window.loadComet === "function") {
   window._skipInitialFocus = true;
@@ -1124,6 +1076,11 @@ function sampleBetaFromCurve(u) {
 //Colors by mode (none/beta/age/dist/vrel) using WebGPU
 //WebGL fallback: per-particle propagation + identical coloring
 
+
+const ACTIVE_R_AU = 3.0;
+let distVisMaxScene = 2;
+let vRelMax_kms = 50;
+let vRelMax_scene = (vRelMax_kms * 1000) * SCALE;
 
 let cumulativeExposure = 0;
 function resetExposure() { cumulativeExposure = 0; }
@@ -1617,6 +1574,23 @@ function seedParticleAt(index, r_scene, v_scene_per_s, lifeSeconds, beta) {
   }
 }
 
+function sampleConeDirection(axis, halfAngleRad) {
+  const zAxis = axis.clone().normalize();
+  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
+  const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
+  const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
+  const u = Math.random();
+  const v = Math.random();
+  const cosPhi = 1 - u * (1 - Math.cos(halfAngleRad));
+  const sinPhi = Math.sqrt(Math.max(0, 1 - cosPhi * cosPhi));
+  const theta = 2 * Math.PI * v;
+
+  return zAxis.scale(cosPhi)
+    .add(xAxis.scale(sinPhi * Math.cos(theta)))
+    .add(yAxis.scale(sinPhi * Math.sin(theta)))
+    .normalize();
+}
+
 function rotPQWtoIJK(v, Omega, i, omega) {
   const cO = Math.cos(Omega), sO = Math.sin(Omega);
   const ci = Math.cos(i),     si = Math.sin(i);
@@ -1667,10 +1641,11 @@ function createTailParticle(timeNowJD) {
   const cs = cometStateAtJD(timeNowJD);
   const cometPos_scene = cs.r_scene;
   const cometVel_scene = cs.v_scene_per_s;
-  const beta = generateBeta();
+  const rhAU = cs.rh_AU;
+const beta = generateBeta();
 
-  const v_scene = cometVel_scene.clone();
-  const r0_scene = cometPos_scene.clone();
+const v_scene = cometVel_scene.clone();
+const r0_scene = cometPos_scene.clone();
 
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
@@ -1734,6 +1709,29 @@ function generateBeta(min, max, skew) {
     u = (skew < 0) ? 1 - Math.pow(1 - u, k) : Math.pow(u, k);
   }
   return min + u * (max - min);
+}
+
+const NUCLEUS_RADIUS_KM = 1.0;
+const R_EMIT_SCENE = (NUCLEUS_RADIUS_KM * 1000) * SCALE;
+const EJECT_CONE_DEG = 30;
+const K_COS_Z = 1.0;
+
+function sampleCosinePowerHemisphere(axis, k) {
+  const zAxis = axis.clone().normalize();
+  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
+  const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
+  const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
+
+  const u = Math.random();
+  const v = Math.random();
+  const cosTheta = Math.pow(u, 1 / (k + 1));
+  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta*cosTheta));
+  const phi = 2 * Math.PI * v;
+
+  return zAxis.scale(cosTheta)
+    .add(xAxis.scale(sinTheta * Math.cos(phi)))
+    .add(yAxis.scale(sinTheta * Math.sin(phi)))
+    .normalize();
 }
 
 
@@ -1887,16 +1885,8 @@ function setSimTime(jd, opts = {}) {
     expiryByIndex.fill(0);
     simSeconds = 0;
     resetExposure();
-{
-  satPhase = 0;
-  const sunDir = comet.position.clone().negate().normalize();
-  satPlaneN = sunDir.length() > 0.5 ? sunDir : new BABYLON.Vector3(0,0,1);
-
-  const basis = makePlaneBasis(satPlaneN);
-  const startOff = basis.ex.scale(SAT_R_SCENE);
-  satMesh.position.copyFrom(comet.position.add(startOff));
-}
   }
+
   if (focus) setFocusOnComet(true);
 }
 window.setSimTime = setSimTime;
@@ -2097,33 +2087,6 @@ if (!isPaused && births > 0) {
 while (tailParticles.length &&
   (simulationTimeJD - tailParticles[0].t0JD) > tailParticles[0].lifetimeDays) {
     tailParticles.shift();
-}
-
-{
-  const dt = (engine.getDeltaTime() / 1000) * simulationSpeed;
-
-  const desiredN = comet.position.clone().negate().normalize();
-
-  const alpha = 1 - Math.exp(-Math.max(0, dt) / Math.max(1e-6, SAT_PLANE_SMOOTH_TAU));
-  satPlaneN = lerpNormalize(satPlaneN, desiredN, alpha);
-
-  const basis = makePlaneBasis(satPlaneN);
-
-  satPhase = (satPhase + SAT_OMEGA * dt) % (2 * Math.PI);
-
-  const cpos = comet.position;
-  const off = basis.ex.scale(SAT_R_SCENE * Math.cos(satPhase))
-                .add(basis.ey.scale(SAT_R_SCENE * Math.sin(satPhase)));
-
-  const satPos = cpos.add(off);
-  satMesh.position.copyFrom(satPos);
-
-  const velDir = basis.ex.scale(-Math.sin(satPhase))
-                 .add(basis.ey.scale( Math.cos(satPhase))).normalize();
-  const upDir  = satPlaneN;
-
-  satMesh.rotationQuaternion = BABYLON.Quaternion.FromLookDirectionLH(velDir, upDir);
-
 }
 
 if (!useCompute) {
