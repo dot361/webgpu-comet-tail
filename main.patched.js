@@ -1545,7 +1545,7 @@ function keplerUniversalPropagate(r0, v0, dt, mu) {
 }
 
   const tailParticles = [];
-  const MAX_PARTICLES_GPU = 100000;
+  const MAX_PARTICLES_GPU = 1000000;
   const MAX_PARTICLES_CPU = 5000;
   const MAX_PARTICLES = useCompute ? MAX_PARTICLES_GPU : MAX_PARTICLES_CPU;
 
