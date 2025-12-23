@@ -1,3 +1,27 @@
+  function parseNum(v) {
+  if (typeof v !== "string") return NaN;
+  const s = v.trim().replace(",", ".");
+  return Number(s);
+}
+
+function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
+  switch (unit) {
+    case "scene":
+      return new BABYLON.Vector3(x, y, z);
+
+    case "AU":
+      return new BABYLON.Vector3(x * AU * SCALE, y * AU * SCALE, z * AU * SCALE);
+
+    case "km":
+      return new BABYLON.Vector3(x * 1000 * SCALE, y * 1000 * SCALE, z * 1000 * SCALE);
+
+    case "m":
+    default:
+      return new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE);
+  }
+}
+
+
 async function startSimulation() {
 
 
@@ -199,6 +223,152 @@ function jdToDateString(jd) {
   camera.attachControl(canvas, true);
   camera.wheelDeltaPercentage = 0.005;
 
+  const camXInput = document.getElementById("camXInput");
+  const camYInput = document.getElementById("camYInput");
+  const camZInput = document.getElementById("camZInput");
+  const camUnitSelect = document.getElementById("camUnitSelect");
+  const lockCamPosBtn = document.getElementById("lockCamPosBtn");
+  const lockEarthBtn = document.getElementById("lockEarthBtn");
+
+  let lockedCam = null;
+  let savedArcRotateState = null;
+  let isCamPosLocked = false;
+  let autoTrackCometWhileLocked = false;
+  let lockMode = "none";
+
+function createLockedCameraAtPosition(position, lookTarget) {
+  lockedCam = new BABYLON.UniversalCamera("lockedCam", position.clone(), scene);
+
+  if (lookTarget) {
+    lockedCam.setTarget(lookTarget);
+  }
+
+  lockedCam.attachControl(canvas, true);
+  lockedCam.inputs.removeByType("FreeCameraKeyboardMoveInput");
+  lockedCam.inputs.removeByType("FreeCameraMouseWheelInput");
+  lockedCam.speed = 0;
+
+  scene.activeCamera = lockedCam;
+}
+
+
+function updateFocusButtonLabel() {
+  if (isCamPosLocked) {
+    toggleFocusBtn.textContent = autoTrackCometWhileLocked
+      ? "Stop Tracking"
+      : "Track Comet";
+  } else {
+    toggleFocusBtn.textContent = isCameraFocused
+      ? "Unfocus Camera"
+      : "Focus on Comet";
+  }
+}
+
+function lockCameraPositionToJ2000() {
+  const x = parseNum(camXInput.value);
+  const y = parseNum(camYInput.value);
+  const z = parseNum(camZInput.value);
+  const unit = camUnitSelect.value;
+
+  if (![x, y, z].every(Number.isFinite)) {
+    console.warn("Invalid camera coordinates");
+    return;
+  }
+
+  const posScene = j2000ToSceneUnits(x, y, z, unit, AU, SCALE);
+
+  savedArcRotateState = {
+    alpha: camera.alpha,
+    beta: camera.beta,
+    radius: camera.radius,
+    target: camera.target.clone(),
+    lockedTarget: camera.lockedTarget
+  };
+
+  lockedCam = new BABYLON.UniversalCamera(
+    "lockedCam",
+    posScene.clone(),
+    scene
+  );
+
+  const lookTarget =
+    camera.lockedTarget?.position ?? camera.target;
+  lockedCam.setTarget(lookTarget);
+
+  lockedCam.attachControl(canvas, true);
+
+  lockedCam.inputs.removeByType("FreeCameraKeyboardMoveInput");
+  lockedCam.inputs.removeByType("FreeCameraMouseWheelInput");
+  lockedCam.speed = 0;
+
+  scene.activeCamera = lockedCam;
+
+  isCamPosLocked = true;
+  lockMode = "j2000";
+  autoTrackCometWhileLocked = false;
+
+  lockCamPosBtn.textContent = "Unlock camera position";
+  lockEarthBtn.textContent = "Lock to Earth";
+
+updateFocusButtonLabel();
+
+}
+
+function lockCameraToEarth() {
+  if (!earthMesh) {
+    console.warn("Earth mesh not available");
+    return;
+  }
+
+  savedArcRotateState = {
+    alpha: camera.alpha,
+    beta: camera.beta,
+    radius: camera.radius,
+    target: camera.target.clone(),
+    lockedTarget: camera.lockedTarget
+  };
+
+  const lookTarget =
+    camera.lockedTarget?.position ?? camera.target;
+
+  createLockedCameraAtPosition(earthMesh.position, lookTarget);
+
+  isCamPosLocked = true;
+  lockMode = "earth";
+  autoTrackCometWhileLocked = false;
+
+  lockCamPosBtn.textContent = "Lock camera position";
+  lockEarthBtn.textContent = "Unlock Earth lock";
+
+  updateFocusButtonLabel();
+}
+
+function unlockCameraPosition() {
+  if (lockedCam) {
+    lockedCam.detachControl(canvas);
+    lockedCam.dispose();
+    lockedCam = null;
+  }
+
+  camera.alpha = savedArcRotateState.alpha;
+  camera.beta = savedArcRotateState.beta;
+  camera.radius = savedArcRotateState.radius;
+  camera.setTarget(savedArcRotateState.target);
+  camera.lockedTarget = savedArcRotateState.lockedTarget ?? null;
+
+  scene.activeCamera = camera;
+
+  isCamPosLocked = false;
+  lockMode = "none";
+  autoTrackCometWhileLocked = false;
+
+  lockCamPosBtn.textContent = "Lock camera position";
+  lockEarthBtn.textContent = "Lock to Earth";
+
+  updateFocusButtonLabel();
+}
+
+
   let isCameraFocused = false;
   let lastCameraTarget = camera.target.clone();
   let lastCameraRadius = camera.radius;
@@ -206,6 +376,21 @@ function jdToDateString(jd) {
   camera.panningSensibility = 300;
 
 function setFocusOnComet(on) {
+
+  if (isCamPosLocked && lockedCam) {
+    autoTrackCometWhileLocked = on;
+
+    toggleFocusBtn.textContent = on
+      ? "Unfocus Camera"
+      : "Focus on Comet";
+
+    if (on && cometMesh) {
+      lockedCam.setTarget(cometMesh.position);
+    }
+
+    return;
+  }
+
   isCameraFocused = on;
   toggleFocusBtn.textContent = on ? "Unfocus Camera" : "Focus on Comet";
 
@@ -215,7 +400,9 @@ function setFocusOnComet(on) {
 
     camera.lockedTarget = cometMesh;
     camera.radius = Math.max(2, Math.min(camera.radius, 1e6));
-    if (!Number.isFinite(camera.beta) || camera.beta <= 0) camera.beta = Math.PI/3;
+    if (!Number.isFinite(camera.beta) || camera.beta <= 0) {
+      camera.beta = Math.PI / 3;
+    }
   } else {
     camera.lockedTarget = null;
     camera.setTarget(lastCameraTarget);
@@ -223,7 +410,30 @@ function setFocusOnComet(on) {
   }
 }
 
-toggleFocusBtn.onclick = () => setFocusOnComet(!isCameraFocused);
+toggleFocusBtn.onclick = () => {
+  if (isCamPosLocked) {
+    setFocusOnComet(!autoTrackCometWhileLocked);
+  } else {
+    setFocusOnComet(!isCameraFocused);
+  }
+};
+
+lockCamPosBtn.onclick = () => {
+  if (isCamPosLocked && lockMode === "j2000") {
+    unlockCameraPosition();
+  } else {
+    lockCameraPositionToJ2000();
+  }
+};
+
+lockEarthBtn.onclick = () => {
+  if (isCamPosLocked && lockMode === "earth") {
+    unlockCameraPosition();
+  } else {
+    lockCameraToEarth();
+  }
+};
+
 
 function setViewAxis(axis) {
   if (isCameraFocused) return;
@@ -249,6 +459,17 @@ function setViewAxis(axis) {
   camera.setTarget(target);
   lastCameraTarget = camera.target.clone();
 }
+
+scene.onBeforeRenderObservable.add(() => {
+  if (
+    isCamPosLocked &&
+    lockedCam &&
+    cometMesh &&
+    autoTrackCometWhileLocked
+  ) {
+    lockedCam.setTarget(cometMesh.position);
+  }
+});
 
 
 //---------------------------------------ELEMENTS---------------------------------------
@@ -1429,7 +1650,7 @@ const modeIndex =
   device.queue.writeBuffer(globalsUBO, 68, new Uint32Array([modeIndex]));
   device.queue.writeBuffer(globalsUBO, 72, new Float32Array([POINT_PX]));
   device.queue.writeBuffer(globalsUBO, 80, new Float32Array([rw, rh]));
-device.queue.writeBuffer(globalsUBO, 96, new Float32Array([
+  device.queue.writeBuffer(globalsUBO, 96, new Float32Array([
   cometVel_scene.x, cometVel_scene.y, cometVel_scene.z, 0
 ]));
 
@@ -1572,23 +1793,6 @@ function seedParticleAt(index, r_scene, v_scene_per_s, lifeSeconds, beta) {
   if (rawParticles) {
     rawParticles.seed(index, r_scene, v_scene_per_s, lifeSeconds, beta);
   }
-}
-
-function sampleConeDirection(axis, halfAngleRad) {
-  const zAxis = axis.clone().normalize();
-  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
-  const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
-  const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
-  const u = Math.random();
-  const v = Math.random();
-  const cosPhi = 1 - u * (1 - Math.cos(halfAngleRad));
-  const sinPhi = Math.sqrt(Math.max(0, 1 - cosPhi * cosPhi));
-  const theta = 2 * Math.PI * v;
-
-  return zAxis.scale(cosPhi)
-    .add(xAxis.scale(sinPhi * Math.cos(theta)))
-    .add(yAxis.scale(sinPhi * Math.sin(theta)))
-    .normalize();
 }
 
 function rotPQWtoIJK(v, Omega, i, omega) {
@@ -1997,6 +2201,24 @@ rawParticles.update(
         toggleCometOrbit();
         return;
 
+      case 'l': case 'L':
+        e.preventDefault();
+        if (isCamPosLocked && lockMode === "j2000") {
+          unlockCameraPosition();
+        } else {
+          lockCameraPositionToJ2000();
+        }
+        return;
+
+      case 'e': case 'E':
+        e.preventDefault();
+        if (isCamPosLocked && lockMode === "earth") {
+          unlockCameraPosition();
+        } else {
+          lockCameraToEarth();
+        }
+        return;
+
     }
   });
 })();
@@ -2171,9 +2393,29 @@ const earthPos = getPlanetPosition(simulationTimeJD, earthEl);
 earthMesh.position.copyFrom(earthPos);
 }
 
+scene.onBeforeRenderObservable.add(() => {
+
+  if (
+    isCamPosLocked &&
+    lockMode === "earth" &&
+    lockedCam &&
+    earthMesh
+  ) {
+    lockedCam.position.copyFrom(earthMesh.position);
+  }
+
+  if (
+    isCamPosLocked &&
+    lockedCam &&
+    cometMesh &&
+    autoTrackCometWhileLocked
+  ) {
+    lockedCam.setTarget(cometMesh.position);
+  }
+});
+
   scene.render();
 });
 
   window.setViewAxis = setViewAxis;
 }
-
