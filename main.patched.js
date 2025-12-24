@@ -1,26 +1,3 @@
-  function parseNum(v) {
-  if (typeof v !== "string") return NaN;
-  const s = v.trim().replace(",", ".");
-  return Number(s);
-}
-
-function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
-  switch (unit) {
-    case "scene":
-      return new BABYLON.Vector3(x, y, z);
-
-    case "AU":
-      return new BABYLON.Vector3(x * AU * SCALE, y * AU * SCALE, z * AU * SCALE);
-
-    case "km":
-      return new BABYLON.Vector3(x * 1000 * SCALE, y * 1000 * SCALE, z * 1000 * SCALE);
-
-    case "m":
-    default:
-      return new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE);
-  }
-}
-
 
 async function startSimulation() {
 
@@ -209,6 +186,26 @@ function jdToDateString(jd) {
       `${pad(dt.hours)}:${pad(dt.minutes)}:${pad(dt.seconds)} UTC`;
   }
 
+function parseNum(v) {
+  if (typeof v !== "string") return NaN;
+  const s = v.trim().replace(",", ".");
+  return Number(s);
+}
+
+function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
+  switch (unit) {
+    case "AU":
+      return new BABYLON.Vector3(x * AU * SCALE, y * AU * SCALE, z * AU * SCALE);
+
+    case "km":
+      return new BABYLON.Vector3(x * 1000 * SCALE, y * 1000 * SCALE, z * 1000 * SCALE);
+
+    case "m":
+    default:
+      return new BABYLON.Vector3(x * SCALE, y * SCALE, z * SCALE);
+  }
+}
+
 
 //----------------------------------CAMERA------------------------------------
 //ArcRotate camera with zoom/pan
@@ -235,6 +232,80 @@ function jdToDateString(jd) {
   let isCamPosLocked = false;
   let autoTrackCometWhileLocked = false;
   let lockMode = "none";
+  let synchroneMeshes = [];
+  let synchroneEpochJD = null;
+
+function parseNumberList(str) {
+  if (!str || typeof str !== "string") return [];
+  return str
+    .split(",")
+    .map(s => parseFloat(s.trim()))
+    .filter(v => Number.isFinite(v));
+}
+
+function generateSynchronesAtEpoch({
+  observationJD,
+  emissionOffsetsDays,
+  betaValues
+}) {
+  const lines = [];
+
+  for (const dDays of emissionOffsetsDays) {
+    const emissionJD = observationJD + dDays;
+    const csEmit = cometStateAtJD(emissionJD);
+    if (!csEmit) continue;
+
+    const r0_m   = csEmit.r_scene.scale(1 / SCALE);
+    const v0_mps = csEmit.v_scene_per_s.scale(1 / SCALE);
+
+    const pts = [];
+
+    for (const beta of betaValues) {
+      const muEff = GMsun * Math.max(0, 1 - beta);
+      const dtSec = (observationJD - emissionJD) * SECONDS_PER_DAY;
+
+      let r_m;
+      if (muEff <= 0 || dtSec === 0) {
+        r_m = r0_m.add(v0_mps.scale(dtSec));
+      } else {
+        r_m = keplerUniversalPropagate(r0_m, v0_mps, dtSec, muEff).r;
+      }
+
+      pts.push(r_m.scale(SCALE));
+    }
+
+    if (pts.length >= 2) {
+      lines.push({ dDays, points: pts });
+    }
+  }
+
+  return lines;
+}
+
+function drawSynchrones(scene, lines) {
+  clearSynchrones();
+
+  for (const L of lines) {
+
+    const synLine = BABYLON.MeshBuilder.CreateLines(
+      `synchrone_${L.dDays}`,
+      { points: L.points },
+      scene
+    );
+
+    synLine.color = new BABYLON.Color3(1.0, 0.75, 0.3);
+
+    synLine.isPickable = false;
+    synLine.renderingGroupId = 2;
+
+    synchroneMeshes.push(synLine);
+  }
+}
+
+function clearSynchrones() {
+  synchroneMeshes.forEach(m => m.dispose());
+  synchroneMeshes.length = 0;
+}
 
 function createLockedCameraAtPosition(position, lookTarget) {
   lockedCam = new BABYLON.UniversalCamera("lockedCam", position.clone(), scene);
@@ -250,7 +321,6 @@ function createLockedCameraAtPosition(position, lookTarget) {
 
   scene.activeCamera = lockedCam;
 }
-
 
 function updateFocusButtonLabel() {
   if (isCamPosLocked) {
@@ -310,8 +380,7 @@ function lockCameraPositionToJ2000() {
   lockCamPosBtn.textContent = "Unlock camera position";
   lockEarthBtn.textContent = "Lock to Earth";
 
-updateFocusButtonLabel();
-
+  updateFocusButtonLabel();
 }
 
 function lockCameraToEarth() {
@@ -328,8 +397,7 @@ function lockCameraToEarth() {
     lockedTarget: camera.lockedTarget
   };
 
-  const lookTarget =
-    camera.lockedTarget?.position ?? camera.target;
+  const lookTarget = camera.lockedTarget?.position ?? camera.target;
 
   createLockedCameraAtPosition(earthMesh.position, lookTarget);
 
@@ -367,7 +435,6 @@ function unlockCameraPosition() {
 
   updateFocusButtonLabel();
 }
-
 
   let isCameraFocused = false;
   let lastCameraTarget = camera.target.clone();
@@ -433,7 +500,6 @@ lockEarthBtn.onclick = () => {
     lockCameraToEarth();
   }
 };
-
 
 function setViewAxis(axis) {
   if (isCameraFocused) return;
@@ -603,8 +669,6 @@ function applyElementsToUI(elts) {
   if (elts.Omega_deg !== undefined) longitudeAscendingNodeInput.value = String(elts.Omega_deg);
   if (elts.omega_deg !== undefined) argumentPerihelionInput.value = String(elts.omega_deg);
   if (elts.t0_JD !== undefined) perihelionDateInput.value = String(elts.t0_JD);
-
-  updateOrbitParameters();
 }
 
 function activatePresetComet(mesh) {
@@ -705,7 +769,6 @@ function drawPlanetOrbit(scene, el, segments = 1024, color = new BABYLON.Color3(
 }
 
 const PLANET_ELTS_DEG = [
-  // name,        a(AU),      e,        i,        Ω,         ω,         M0
   ["Mercury",   0.387098,  0.205630,  7.00487,  48.33167,  77.45645, 252.25084],
   ["Venus",     0.723332,  0.006772,  3.39471,  76.68069, 131.53298, 181.97973],
   ["Earth",     1.000000,  0.016710,  0.00005, -11.26064, 102.94719, 100.46435],
@@ -840,7 +903,12 @@ createStarfield(scene);
   const argumentPerihelionInput = document.getElementById("argumentPerihelionInput");
   const perihelionDateInput = document.getElementById("perihelionDateInput");
   const activityHalfLifeInput = document.getElementById("activityHalfLifeInput");
+  const activityExponentInput = document.getElementById("activityExponentInput");
+  const activityScaleInput = document.getElementById("activityScaleInput");
   const visModeSelect = document.getElementById("visModeSelect");
+  const synDaysInput = document.getElementById("synchroneDaysInput");
+  const synBetasInput = document.getElementById("synchroneBetasInput");
+  const synBtn = document.getElementById("generateSynchronesBtn");
 
   let fadeHalfLifeEDays = parseFloat(activityHalfLifeInput?.value) || 1500;
   let e = parseFloat(eccentricityInput.value);
@@ -852,6 +920,8 @@ createStarfield(scene);
   let t0 = parseFloat(perihelionDateInput.value);
   let visMode = 'none';
   let velocityScale = 1.0;
+  let activityN = 2;
+  let activityK = 1;
 
 
 //-------------------------------------COMETS ORBIT---------------------------------------------
@@ -1289,6 +1359,40 @@ function sampleBetaFromCurve(u) {
 
   return Math.min(xn, Math.max(x0, x));
 }
+
+synBtn.addEventListener("click", async () => {
+  console.log("[Synchrones] Clicked. isPaused =", isPaused);
+  if (!isPaused) {
+    console.warn("Pause simulation before generating synchrones");
+    return;
+  }
+
+  const days  = parseNumberList(synDaysInput.value);
+  const betas = parseNumberList(synBetasInput.value);
+
+  if (days.length === 0 || betas.length === 0) {
+    console.warn("Invalid synchrone inputs");
+    return;
+  }
+
+  synBtn.textContent = "Computing…";
+  synBtn.disabled = true;
+
+  await new Promise(r => setTimeout(r, 0));
+
+  synchroneEpochJD = simulationTimeJD;
+
+  const lines = generateSynchronesAtEpoch({
+    observationJD: synchroneEpochJD,
+    emissionOffsetsDays: days,
+    betaValues: betas
+  });
+
+  drawSynchrones(scene, lines);
+
+  synBtn.textContent = "Generate synchrones";
+  updateSynchroneButtonState();
+});
 
 
 //-----------------------------------------PARTICLES----------------------------------------------
@@ -1769,18 +1873,19 @@ function keplerUniversalPropagate(r0, v0, dt, mu) {
   const MAX_PARTICLES_GPU = 1000000;
   const MAX_PARTICLES_CPU = 5000;
   const MAX_PARTICLES = useCompute ? MAX_PARTICLES_GPU : MAX_PARTICLES_CPU;
-
   const cpuSlots = new Array(MAX_PARTICLES);
-
   const particleLifetimeInput = document.getElementById("particleLifetimeInput");
   const particleCountInput = document.getElementById("particleCountInput");
-  const activityExponentInput = document.getElementById("activityExponentInput");
-  const activityScaleInput = document.getElementById("activityScaleInput");
-    
-  let baseLifetime = parseFloat(particleLifetimeInput.value);
-  let particleCountPerSec = parseInt(particleCountInput.value);
-  let activityN = parseFloat(activityExponentInput?.value ?? 2) || 2;
-  let activityK = parseFloat(activityScaleInput?.value ?? 1)   || 1;
+
+  let baseLifetime = 30;
+  let particleCountPerSec = 1;
+
+updateOrbitParameters();
+
+  baseLifetime = parseFloat(particleLifetimeInput.value);
+  particleCountPerSec = parseInt(particleCountInput.value);
+  activityN = parseFloat(activityExponentInput?.value ?? 2) || 2;
+  activityK = parseFloat(activityScaleInput?.value ?? 1)   || 1;
 
   fadeHalfLifeEDays = parseFloat(activityHalfLifeInput.value);
   if (!isFinite(fadeHalfLifeEDays) || fadeHalfLifeEDays <= 0) fadeHalfLifeEDays = 1500;
@@ -1845,7 +1950,6 @@ function createTailParticle(timeNowJD) {
   const cs = cometStateAtJD(timeNowJD);
   const cometPos_scene = cs.r_scene;
   const cometVel_scene = cs.v_scene_per_s;
-  const rhAU = cs.rh_AU;
 const beta = generateBeta();
 
 const v_scene = cometVel_scene.clone();
@@ -1915,28 +2019,6 @@ function generateBeta(min, max, skew) {
   return min + u * (max - min);
 }
 
-const NUCLEUS_RADIUS_KM = 1.0;
-const R_EMIT_SCENE = (NUCLEUS_RADIUS_KM * 1000) * SCALE;
-const EJECT_CONE_DEG = 30;
-const K_COS_Z = 1.0;
-
-function sampleCosinePowerHemisphere(axis, k) {
-  const zAxis = axis.clone().normalize();
-  const tmp = Math.abs(zAxis.x) < 0.99 ? new BABYLON.Vector3(1,0,0) : new BABYLON.Vector3(0,1,0);
-  const xAxis = BABYLON.Vector3.Cross(tmp, zAxis).normalize();
-  const yAxis = BABYLON.Vector3.Cross(zAxis, xAxis).normalize();
-
-  const u = Math.random();
-  const v = Math.random();
-  const cosTheta = Math.pow(u, 1 / (k + 1));
-  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta*cosTheta));
-  const phi = 2 * Math.PI * v;
-
-  return zAxis.scale(cosTheta)
-    .add(xAxis.scale(sinTheta * Math.cos(phi)))
-    .add(yAxis.scale(sinTheta * Math.sin(phi)))
-    .normalize();
-}
 
 
 //------------------------------------USER INTERFACE---------------------------------
@@ -2045,11 +2127,28 @@ window.updateOrbitParameters = updateOrbitParameters;
 let isPaused = false;
 const pauseBtn = document.getElementById("pauseBtn");
 
+function updateSynchroneButtonState() {
+  if (!synBtn) return;
+  synBtn.disabled = !isPaused;
+
+  synBtn.style.opacity = synBtn.disabled ? "0.5" : "1.0";
+  synBtn.style.cursor  = synBtn.disabled ? "not-allowed" : "pointer";
+}
+
+updateSynchroneButtonState();
+
 pauseBtn.addEventListener("click", () => {
-  
   isPaused = !isPaused;
+
   pauseBtn.textContent = isPaused ? "Resume" : "Pause";
-    updateTimelineUIState();
+  updateTimelineUIState();
+
+  updateSynchroneButtonState();
+
+  if (!isPaused && synchroneMeshes.length) {
+    clearSynchrones();
+    synchroneEpochJD = null;
+  }
 });
 
   const particleMeshes = [];
@@ -2112,8 +2211,7 @@ rawParticles.update(
   cs_now_for_gpu.v_scene_per_s,
   cs_now_for_gpu.r_scene
 );
-
-  });
+});
 }
 
 (function setupShortcuts() {

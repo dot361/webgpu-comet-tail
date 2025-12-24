@@ -351,13 +351,16 @@
 <label for="camZInput">Camera locking position z</label>
 <input type="text" id="camZInput" value="1" placeholder="e.g. 0.000042" />
 
-<label for="camUnitSelect">Units</label>
+<label for="camUnitSelect">Units for locking</label>
 <select id="camUnitSelect">
   <option value="AU" selected>AU</option>
   <option value="m">meters</option>
   <option value="km">kilometers</option>
-  <option value="scene">scene units (already scaled)</option>
 </select>
+
+<input id="synchroneDaysInput"  value="-120,-60,-30,-10" />
+<input id="synchroneBetasInput" value="0.01,0.05,0.1,0.3,0.7" />
+<button id="generateSynchronesBtn" type="button">Generate synchrones</button>
 
   <label for="velocitySlider">Simulation speed: <span id="velocityValue">1</span></label>
   <input type="range" id="velocitySlider" min="0" max="100" value="0" step="1">
@@ -392,7 +395,7 @@
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
-  " id="lockEarthBtn">Lock to Earth</button>
+  " id="lockEarthBtn">Lock camera to Earth</button>
 
   <button style="
     background: none;
@@ -402,7 +405,7 @@
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
-  " id="toggleOrbitBtn">Toggle Orbit</button>
+  " id="toggleOrbitBtn">Toggle Orbit Visibility</button>
 
   <button style="
     background: none;
