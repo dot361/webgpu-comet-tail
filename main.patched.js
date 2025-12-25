@@ -334,9 +334,11 @@ function generateSynchronesAtEpoch({
     }
 
     if (pts.length >= 2) {
-      lines.push({ dDays, points: pts });
+      lines.push({ dDays, betas: [...betaValues], points: pts });
     }
   }
+
+  lastSynchroneLines = lines;
 
   return lines;
 }
@@ -373,12 +375,17 @@ function generateSyndynesAtEpoch({
     }
 
     if (pts.length >= 2) {
-      lines.push({ beta, points: pts });
+      lines.push({ beta, dDaysList: [...emissionOffsetsDays], points: pts });
     }
   }
 
+  lastSyndyneLines = lines;
+
   return lines;
 }
+
+let lastSynchroneLines = null;
+let lastSyndyneLines = null;
 
 function drawSynchrones(scene, lines) {
   clearSynchrones();
@@ -679,6 +686,120 @@ const GMsun = 1.32712440018e20;
 const MU_SCENE = GMsun * Math.pow(SCALE, 3);
 
 const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui");
+
+const EPS_J2000 = 23.439291111 * Math.PI / 180;
+const _cE = Math.cos(EPS_J2000), _sE = Math.sin(EPS_J2000);
+
+function eclToEq(v) {
+  return new BABYLON.Vector3(
+    v.x,
+    v.y * _cE - v.z * _sE,
+    v.y * _sE + v.z * _cE
+  );
+}
+
+function vecEqToRaDecDeg(vEq) {
+  const u = vEq.normalize();
+  let ra = Math.atan2(u.y, u.x) * 180 / Math.PI;
+  if (ra < 0) ra += 360;
+  const dec = Math.asin(u.z) * 180 / Math.PI;
+  return { raDeg: ra, decDeg: dec };
+}
+
+function heliocentricSceneToRaDec(scenePos, earthScenePos) {
+  const rhoEcl = scenePos.subtract(earthScenePos);
+  const rhoEq  = eclToEq(rhoEcl);
+  return vecEqToRaDecDeg(rhoEq);
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  return (s.includes(",") || s.includes('"') || s.includes("\n"))
+    ? `"${s.replace(/"/g, '""')}"`
+    : s;
+}
+
+function downloadCSV(filename, rows) {
+  const csv = rows.map(r => r.map(csvEscape).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportSynchroneSyndyneCSV() {
+  if (!isPaused) {
+    console.warn("Pause the simulation before exporting synchrone/syndyne CSV.");
+    return;
+  }
+
+  const hasSyn = Array.isArray(lastSynchroneLines) && lastSynchroneLines.length;
+  const hasSyd = Array.isArray(lastSyndyneLines)   && lastSyndyneLines.length;
+
+  if (!hasSyn && !hasSyd) {
+    console.warn("Nothing to export. Generate synchrones/syndynes first.");
+    return;
+  }
+
+  const epochJD = synchroneEpochJD ?? syndyneEpochJD ?? simulationTimeJD;
+  const earthScene = getPlanetPosition(epochJD, earthEl);
+  const cometScene = cometStateAtJD(epochJD).r_scene;
+  const cometRD    = heliocentricSceneToRaDec(cometScene, earthScene);
+
+  const rows = [];
+  rows.push([
+    "type", "epochJD",
+    "dDays", "beta", "pointIndex",
+    "raDeg", "decDeg",
+    "cometRaDeg", "cometDecDeg"
+  ]);
+
+  if (hasSyn) {
+    for (const L of lastSynchroneLines) {
+      const betas = L.betas || [];
+      for (let k = 0; k < L.points.length; k++) {
+        const beta = betas[k] ?? "";
+        const rd = heliocentricSceneToRaDec(L.points[k], earthScene);
+
+        rows.push([
+          "synchrone", epochJD,
+          L.dDays, beta, k,
+          rd.raDeg.toFixed(8), rd.decDeg.toFixed(8),
+          cometRD.raDeg.toFixed(8), cometRD.decDeg.toFixed(8)
+        ]);
+      }
+    }
+  }
+
+  if (hasSyd) {
+    for (const L of lastSyndyneLines) {
+      const days = L.dDaysList || [];
+      for (let k = 0; k < L.points.length; k++) {
+        const dDays = days[k] ?? "";
+        const rd = heliocentricSceneToRaDec(L.points[k], earthScene);
+
+        rows.push([
+          "syndyne", epochJD,
+          dDays, L.beta, k,
+          rd.raDeg.toFixed(8), rd.decDeg.toFixed(8),
+          cometRD.raDeg.toFixed(8), cometRD.decDeg.toFixed(8)
+        ]);
+      }
+    }
+  }
+
+  const fname = `synchrone_syndyne_radec_JD${epochJD.toFixed(2)}.csv`;
+  downloadCSV(fname, rows);
+
+  console.log(`[CSV] Exported ${rows.length - 1} rows -> ${fname}`);
+}
 
 function addLabel(mesh, text, opts = {}) {
   const rect = new BABYLON.GUI.Rectangle();
@@ -1602,6 +1723,10 @@ syndyneBtn.addEventListener("click", async () => {
   syndyneBtn.textContent = "Generate syndynes";
 });
 
+const exportCSVBtn = document.getElementById("exportSynSydCSVBtn");
+exportCSVBtn.addEventListener("click", exportSynchroneSyndyneCSV);
+
+
 
 //-----------------------------------------PARTICLES----------------------------------------------
 //Ejection parameters and beta distribution (editable spline) drive particle seeding
@@ -2347,6 +2472,12 @@ function updateDiagnosticButtonState() {
     syndyneBtn.style.opacity = syndyneBtn.disabled ? "0.5" : "1.0";
     syndyneBtn.style.cursor  = syndyneBtn.disabled ? "not-allowed" : "pointer";
   }
+
+  if (exportCSVBtn) {
+  exportCSVBtn.disabled = !isPaused;
+  exportCSVBtn.style.opacity = exportCSVBtn.disabled ? "0.5" : "1.0";
+  exportCSVBtn.style.cursor  = exportCSVBtn.disabled ? "not-allowed" : "pointer";
+}
 }
 
 updateDiagnosticButtonState();
