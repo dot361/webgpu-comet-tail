@@ -1,3 +1,60 @@
+function computePAFromSynchrone({ synchronePoints, cometPos, earthPos }) {
+  if (!synchronePoints || synchronePoints.length < 2) return null;
+
+  const eps = 23.439291111 * Math.PI / 180;
+  const cE = Math.cos(eps), sE = Math.sin(eps);
+
+  const eclToEq = (v) => new BABYLON.Vector3(
+    v.x,
+    v.y * cE - v.z * sE,
+    v.y * sE + v.z * cE
+  );
+
+  const cometEq = eclToEq(cometPos);
+  const earthEq = eclToEq(earthPos);
+
+  let iClosest = 0;
+  let dMin = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < synchronePoints.length; i++) {
+    const di = BABYLON.Vector3.DistanceSquared(synchronePoints[i], cometPos);
+    if (di < dMin) { dMin = di; iClosest = i; }
+  }
+
+  const candidates = [];
+  if (iClosest > 0) candidates.push(iClosest - 1);
+  if (iClosest < synchronePoints.length - 1) candidates.push(iClosest + 1);
+
+  let iOut = candidates[0];
+  let bestOutDist = -1;
+  for (const j of candidates) {
+    const dj = BABYLON.Vector3.DistanceSquared(synchronePoints[j], cometPos);
+    if (dj > bestOutDist) { bestOutDist = dj; iOut = j; }
+  }
+
+  const P1eq = eclToEq(synchronePoints[iClosest]);
+  const P2eq = eclToEq(synchronePoints[iOut]);
+  const d = P2eq.subtract(P1eq).normalize();
+  const los = cometEq.subtract(earthEq).normalize();
+  const dPerp = d.subtract(los.scale(BABYLON.Vector3.Dot(d, los))).normalize();
+  const rGeo = cometEq.subtract(earthEq).normalize();
+  const ra  = Math.atan2(rGeo.y, rGeo.x);
+  const dec = Math.asin(rGeo.z);
+  const east = new BABYLON.Vector3(-Math.sin(ra), Math.cos(ra), 0).normalize();
+  const north = new BABYLON.Vector3(
+    -Math.cos(ra) * Math.sin(dec),
+    -Math.sin(ra) * Math.sin(dec),
+     Math.cos(dec)
+  ).normalize();
+
+  let pa = Math.atan2(
+    BABYLON.Vector3.Dot(dPerp, east),
+    BABYLON.Vector3.Dot(dPerp, north)
+  ) * 180 / Math.PI;
+
+  if (pa < 0) pa += 360;
+  return pa;
+}
+
 
 async function startSimulation() {
 
@@ -234,6 +291,8 @@ function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
   let lockMode = "none";
   let synchroneMeshes = [];
   let synchroneEpochJD = null;
+  let syndyneMeshes = [];
+  let syndyneEpochJD = null;
 
 function parseNumberList(str) {
   if (!str || typeof str !== "string") return [];
@@ -282,6 +341,45 @@ function generateSynchronesAtEpoch({
   return lines;
 }
 
+function generateSyndynesAtEpoch({
+  observationJD,
+  emissionOffsetsDays,
+  betaValues
+}) {
+  const lines = [];
+
+  for (const beta of betaValues) {
+    const pts = [];
+
+    for (const dDays of emissionOffsetsDays) {
+      const emissionJD = observationJD + dDays;
+      const csEmit = cometStateAtJD(emissionJD);
+      if (!csEmit) continue;
+
+      const r0_m   = csEmit.r_scene.scale(1 / SCALE);
+      const v0_mps = csEmit.v_scene_per_s.scale(1 / SCALE);
+
+      const muEff = GMsun * Math.max(0, 1 - beta);
+      const dtSec = (observationJD - emissionJD) * SECONDS_PER_DAY;
+
+      let r_m;
+      if (muEff <= 0 || dtSec === 0) {
+        r_m = r0_m.add(v0_mps.scale(dtSec));
+      } else {
+        r_m = keplerUniversalPropagate(r0_m, v0_mps, dtSec, muEff).r;
+      }
+
+      pts.push(r_m.scale(SCALE));
+    }
+
+    if (pts.length >= 2) {
+      lines.push({ beta, points: pts });
+    }
+  }
+
+  return lines;
+}
+
 function drawSynchrones(scene, lines) {
   clearSynchrones();
 
@@ -305,6 +403,29 @@ function drawSynchrones(scene, lines) {
 function clearSynchrones() {
   synchroneMeshes.forEach(m => m.dispose());
   synchroneMeshes.length = 0;
+}
+
+function clearSyndynes() {
+  syndyneMeshes.forEach(m => m.dispose());
+  syndyneMeshes.length = 0;
+}
+
+function drawSyndynes(scene, lines) {
+  clearSyndynes();
+
+  for (const L of lines) {
+    const line = BABYLON.MeshBuilder.CreateLines(
+      `syndyne_${L.beta}`,
+      { points: L.points },
+      scene
+    );
+
+    line.color = new BABYLON.Color3(0.35, 0.75, 1.0);
+    line.isPickable = false;
+    line.renderingGroupId = 2;
+
+    syndyneMeshes.push(line);
+  }
 }
 
 function createLockedCameraAtPosition(position, lookTarget) {
@@ -553,6 +674,7 @@ const AU = 1.495978707e11;
 const SECONDS_PER_DAY = 86400;
 const DEG = Math.PI / 180;
 const SCALE = 1e-10;
+const PLANET_SIZE_SCALE = 80;
 const GMsun = 1.32712440018e20;
 const MU_SCENE = GMsun * Math.pow(SCALE, 3);
 
@@ -779,6 +901,21 @@ const PLANET_ELTS_DEG = [
   ["Neptune",  30.11039,   0.008988,  1.77000, 131.78400,  44.97135, 304.88003],
 ];
 
+const PLANET_RADII_KM = {
+  Mercury: 2439.7,
+  Venus:   6051.8,
+  Earth:   6371.0,
+  Mars:    3389.5,
+  Jupiter: 69911,
+  Saturn:  58232,
+  Uranus:  25362,
+  Neptune: 24622
+};
+
+function planetRadiusToSceneUnits(radiusKm) {
+  return radiusKm * 1000 * SCALE * PLANET_SIZE_SCALE;
+}
+
 const PLANET_ELTS = PLANET_ELTS_DEG.map(([name,a,e,i,Omega,omega,M0]) => ({
   name, a, e,
   i:     i     * DEG,
@@ -798,11 +935,6 @@ const planetColors = {
   Neptune: new BABYLON.Color3(0.6, 0.7, 1.0),
 };
 
-const planetSizes = {
-  Mercury: 0.10, Venus: 0.18, Earth: 0.20, Mars: 0.15,
-  Jupiter: 0.50, Saturn: 0.45, Uranus: 0.35, Neptune: 0.34,
-};
-
 const planets = [];
 
 for (const el of PLANET_ELTS) {
@@ -811,8 +943,16 @@ for (const el of PLANET_ELTS) {
   const baseColor = planetColors[el.name] ?? new BABYLON.Color3(0.6, 0.7, 0.9);
   const orbitColor = baseColor;
   const orbitLine = drawPlanetOrbit(scene, el, 1200, orbitColor);
-  const size = planetSizes[el.name] ?? 0.2;
-  const mesh = BABYLON.MeshBuilder.CreateSphere("pl-"+el.name, { diameter: size }, scene);
+
+  const radiusKm = PLANET_RADII_KM[el.name];
+  const radiusScene = planetRadiusToSceneUnits(radiusKm);
+
+  const mesh = BABYLON.MeshBuilder.CreateSphere(
+    "pl-" + el.name,
+    { diameter: radiusScene * 2 },
+    scene
+  );
+
   const mat = new BABYLON.StandardMaterial("mat-"+el.name, scene);
   mat.diffuseColor  = baseColor;
   mat.emissiveColor = baseColor.scale(0.15);
@@ -826,7 +966,14 @@ for (const el of PLANET_ELTS) {
 }
 
 const earthEl = PLANET_ELTS.find(p => p.name === "Earth");
-const earthMesh = BABYLON.MeshBuilder.CreateSphere("earth", { diameter: 0.2 }, scene);
+const earthRadiusScene = planetRadiusToSceneUnits(PLANET_RADII_KM.Earth);
+
+const earthMesh = BABYLON.MeshBuilder.CreateSphere(
+  "earth",
+  { diameter: earthRadiusScene * 2 },
+  scene
+);
+
 const earthMaterial = new BABYLON.StandardMaterial("earthMat", scene);
 earthMaterial.diffuseColor  = planetColors.Earth;
 earthMaterial.emissiveColor = planetColors.Earth.scale(0.15);
@@ -1014,6 +1161,7 @@ function drawOrbit(scene, segments = 800) {
   -0.07948059791,
   -0.00387641697
 );
+
   let cometMesh = null;
   const comet = BABYLON.MeshBuilder.CreateSphere("comet", { diameter: 0.2 }, scene);
   cometMesh = comet;
@@ -1361,7 +1509,6 @@ function sampleBetaFromCurve(u) {
 }
 
 synBtn.addEventListener("click", async () => {
-  console.log("[Synchrones] Clicked. isPaused =", isPaused);
   if (!isPaused) {
     console.warn("Pause simulation before generating synchrones");
     return;
@@ -1390,8 +1537,69 @@ synBtn.addEventListener("click", async () => {
 
   drawSynchrones(scene, lines);
 
+const earthPosNow = getPlanetPosition(simulationTimeJD, earthEl);
+
+console.log("=== Synchrone PA report ===");
+
+const sortedLines = [...lines].sort((a, b) => a.dDays - b.dDays);
+
+for (const L of sortedLines) {
+  if (!L.points || L.points.length < 2) continue;
+
+  const pa = computePAFromSynchrone({
+    synchronePoints: L.points,
+    cometPos: cometPos,
+    earthPos: earthPosNow
+  });
+
+  if (pa !== null) {
+    const label = `${L.dDays}`.padStart(4, " ");
+    console.log(`Synchrone ${label} d : ${pa.toFixed(1)} deg`);
+  }
+}
+
+const cometToSun = cometPos.scale(-1).normalize();
+const pseudoPoints = [cometPos, cometPos.add(cometToSun)];
+
+const PA_antisolar = computePAFromSynchrone({
+  synchronePoints: pseudoPoints,
+  cometPos: cometPos,
+  earthPos: earthPosNow
+});
+
+console.log("Antisolar PA:", PA_antisolar.toFixed(1), "deg");
+
   synBtn.textContent = "Generate synchrones";
-  updateSynchroneButtonState();
+});
+
+const syndyneBtn = document.getElementById("generateSyndynesBtn");
+
+syndyneBtn.addEventListener("click", async () => {
+
+  const days  = parseNumberList(synDaysInput.value);
+  const betas = parseNumberList(synBetasInput.value);
+
+  if (days.length === 0 || betas.length === 0) {
+    console.warn("Invalid syndyne inputs");
+    return;
+  }
+
+  syndyneBtn.textContent = "Computing…";
+  syndyneBtn.disabled = true;
+
+  await new Promise(r => setTimeout(r, 0));
+
+  syndyneEpochJD = simulationTimeJD;
+
+  const lines = generateSyndynesAtEpoch({
+    observationJD: syndyneEpochJD,
+    emissionOffsetsDays: days,
+    betaValues: betas
+  });
+
+  drawSyndynes(scene, lines);
+
+  syndyneBtn.textContent = "Generate syndynes";
 });
 
 
@@ -2127,15 +2335,21 @@ window.updateOrbitParameters = updateOrbitParameters;
 let isPaused = false;
 const pauseBtn = document.getElementById("pauseBtn");
 
-function updateSynchroneButtonState() {
-  if (!synBtn) return;
-  synBtn.disabled = !isPaused;
+function updateDiagnosticButtonState() {
+  if (synBtn) {
+    synBtn.disabled = !isPaused;
+    synBtn.style.opacity = synBtn.disabled ? "0.5" : "1.0";
+    synBtn.style.cursor  = synBtn.disabled ? "not-allowed" : "pointer";
+  }
 
-  synBtn.style.opacity = synBtn.disabled ? "0.5" : "1.0";
-  synBtn.style.cursor  = synBtn.disabled ? "not-allowed" : "pointer";
+  if (syndyneBtn) {
+    syndyneBtn.disabled = !isPaused;
+    syndyneBtn.style.opacity = syndyneBtn.disabled ? "0.5" : "1.0";
+    syndyneBtn.style.cursor  = syndyneBtn.disabled ? "not-allowed" : "pointer";
+  }
 }
 
-updateSynchroneButtonState();
+updateDiagnosticButtonState();
 
 pauseBtn.addEventListener("click", () => {
   isPaused = !isPaused;
@@ -2143,11 +2357,13 @@ pauseBtn.addEventListener("click", () => {
   pauseBtn.textContent = isPaused ? "Resume" : "Pause";
   updateTimelineUIState();
 
-  updateSynchroneButtonState();
+  updateDiagnosticButtonState();
 
   if (!isPaused && synchroneMeshes.length) {
     clearSynchrones();
     synchroneEpochJD = null;
+    clearSyndynes();
+    syndyneEpochJD = null;
   }
 });
 
