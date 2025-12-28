@@ -893,6 +893,12 @@ for (const f of PRESET_FINDERS) {
   ensureCometLabel(mesh, mesh.metadata.cometName);
 }
 
+function wrapDeg(deg) {
+  deg = deg % 360;
+  if (deg < 0) deg += 360;
+  return deg;
+}
+
 scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
   const picked = pi.pickInfo?.pickedMesh;
@@ -1037,13 +1043,36 @@ function planetRadiusToSceneUnits(radiusKm) {
   return radiusKm * 1000 * SCALE * PLANET_SIZE_SCALE;
 }
 
-const PLANET_ELTS = PLANET_ELTS_DEG.map(([name,a,e,i,Omega,omega,M0]) => ({
-  name, a, e,
-  i:     i     * DEG,
-  Omega: Omega * DEG,
-  omega: omega * DEG,
-  M0:    M0    * DEG
-}));
+function deg2rad(deg) {
+  return deg * Math.PI / 180;
+}
+
+function wrapDeg(deg) {
+  deg = deg % 360;
+  if (deg < 0) deg += 360;
+  return deg;
+}
+
+const PLANET_ELTS = PLANET_ELTS_DEG.map(([name, a, e, iDeg, OmegaDeg, varpiDeg, LDeg]) => {
+  const omegaDeg = wrapDeg(varpiDeg - OmegaDeg);
+  const M0Deg    = wrapDeg(LDeg - varpiDeg);
+
+  return {
+    name,
+    a,
+    e,
+    i:     deg2rad(iDeg),
+    Omega: deg2rad(wrapDeg(OmegaDeg)),
+    omega: deg2rad(omegaDeg),
+    M0:    deg2rad(M0Deg),
+
+    _OmegaDeg: OmegaDeg,
+    _varpiDeg: varpiDeg,
+    _LDeg:     LDeg,
+    _omegaDeg: omegaDeg,
+    _M0Deg:    M0Deg
+  };
+});
 
 const planetColors = {
   Mercury: new BABYLON.Color3(0.65, 0.66, 0.68),
@@ -2541,6 +2570,27 @@ function setSimTime(jd, opts = {}) {
 }
 window.setSimTime = setSimTime;
 
+scene.onBeforeRenderObservable.add(() => {
+
+  if (
+    isCamPosLocked &&
+    lockMode === "earth" &&
+    lockedCam &&
+    earthMesh
+  ) {
+    lockedCam.position.copyFrom(earthMesh.position);
+  }
+
+  if (
+    isCamPosLocked &&
+    lockedCam &&
+    cometMesh &&
+    autoTrackCometWhileLocked
+  ) {
+    lockedCam.setTarget(cometMesh.position);
+  }
+});
+
 window.addEventListener("resize", () => {
   engine.resize();
   if (rawParticles) rawParticles.resize();
@@ -2837,27 +2887,6 @@ for (const p of planets) {
 const earthPos = getPlanetPosition(simulationTimeJD, earthEl);
 earthMesh.position.copyFrom(earthPos);
 }
-
-scene.onBeforeRenderObservable.add(() => {
-
-  if (
-    isCamPosLocked &&
-    lockMode === "earth" &&
-    lockedCam &&
-    earthMesh
-  ) {
-    lockedCam.position.copyFrom(earthMesh.position);
-  }
-
-  if (
-    isCamPosLocked &&
-    lockedCam &&
-    cometMesh &&
-    autoTrackCometWhileLocked
-  ) {
-    lockedCam.setTarget(cometMesh.position);
-  }
-});
 
   scene.render();
 });
