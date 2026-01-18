@@ -349,14 +349,13 @@
   <option value="vrel">Relative velocity</option>
 </select>
 
-<label for="camXInput">Camera locking position x</label>
-<input type="text" id="camXInput" value="1"/>
-
-<label for="camYInput">Camera locking position y</label>
-<input type="text" id="camYInput" value="1"/>
-
-<label for="camZInput">Camera locking position z</label>
-<input type="text" id="camZInput" value="1"/>
+<label for="camXYZInput">Camera locking position (x, y, z)</label>
+<input
+  type="text"
+  id="camXYZInput"
+  value="1, 1, 1"
+  placeholder="e.g. 1, 0, 0.2"
+/>
 
 <label for="camUnitSelect">Units for locking</label>
 <select id="camUnitSelect">
@@ -434,6 +433,16 @@
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
   " id="lockEarthBtn">Lock camera to Earth</button>
+
+  <button style="
+    background: none;
+    border: 1.5px solid #ccc;
+    color: #eee;
+    padding: 6px 2px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  " id="toggleGridBtn">Hide Grid</button>
 
   <button style="
     background: none;

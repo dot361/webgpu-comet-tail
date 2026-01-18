@@ -131,6 +131,7 @@ window.__engineIsWebGPU  = (engine && engine.getClassName?.() === "WebGPUEngine"
 
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color3(0.02, 0.02, 0.08);
+let cometMesh = null;
 const useCompute = (engine instanceof BABYLON.WebGPUEngine) && hasCompute;
 
 
@@ -249,6 +250,21 @@ function parseNum(v) {
   return Number(s);
 }
 
+function parseVec3FromText(str) {
+  if (typeof str !== "string") return null;
+
+  const parts = str
+    .trim()
+    .split(/[\s,;]+/)
+    .filter(Boolean);
+
+  if (parts.length !== 3) return null;
+  const nums = parts.map(parseNum);
+  if (!nums.every(Number.isFinite)) return null;
+
+  return { x: nums[0], y: nums[1], z: nums[2] };
+}
+
 function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
   switch (unit) {
     case "AU":
@@ -277,9 +293,7 @@ function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
   camera.attachControl(canvas, true);
   camera.wheelDeltaPercentage = 0.005;
 
-  const camXInput = document.getElementById("camXInput");
-  const camYInput = document.getElementById("camYInput");
-  const camZInput = document.getElementById("camZInput");
+  const camXYZInput  = document.getElementById("camXYZInput");
   const camUnitSelect = document.getElementById("camUnitSelect");
   const lockCamPosBtn = document.getElementById("lockCamPosBtn");
   const lockEarthBtn = document.getElementById("lockEarthBtn");
@@ -339,7 +353,6 @@ function generateSynchronesAtEpoch({
   }
 
   lastSynchroneLines = lines;
-
   return lines;
 }
 
@@ -463,17 +476,15 @@ function updateFocusButtonLabel() {
 }
 
 function lockCameraPositionToJ2000() {
-  const x = parseNum(camXInput.value);
-  const y = parseNum(camYInput.value);
-  const z = parseNum(camZInput.value);
+  const v = parseVec3FromText(camXYZInput?.value ?? "");
   const unit = camUnitSelect.value;
 
-  if (![x, y, z].every(Number.isFinite)) {
-    console.warn("Invalid camera coordinates");
+  if (!v) {
+    console.warn("Invalid camera coordinates. Use: x, y, z");
     return;
   }
 
-  const posScene = j2000ToSceneUnits(x, y, z, unit, AU, SCALE);
+  const posScene = j2000ToSceneUnits(v.x, v.y, v.z, unit, AU, SCALE);
 
   savedArcRotateState = {
     alpha: camera.alpha,
@@ -483,18 +494,12 @@ function lockCameraPositionToJ2000() {
     lockedTarget: camera.lockedTarget
   };
 
-  lockedCam = new BABYLON.UniversalCamera(
-    "lockedCam",
-    posScene.clone(),
-    scene
-  );
+  lockedCam = new BABYLON.UniversalCamera("lockedCam", posScene.clone(), scene);
 
-  const lookTarget =
-    camera.lockedTarget?.position ?? camera.target;
+  const lookTarget = camera.lockedTarget?.position ?? camera.target;
   lockedCam.setTarget(lookTarget);
 
   lockedCam.attachControl(canvas, true);
-
   lockedCam.inputs.removeByType("FreeCameraKeyboardMoveInput");
   lockedCam.inputs.removeByType("FreeCameraMouseWheelInput");
   lockedCam.speed = 0;
@@ -684,6 +689,163 @@ const SCALE = 1e-10;
 const PLANET_SIZE_SCALE = 80;
 const GMsun = 1.32712440018e20;
 const MU_SCENE = GMsun * Math.pow(SCALE, 3);
+
+let auGridMinor = null;
+let auGridMajor = null;
+let gridObserver = null;
+let isAUGridVisible = true;
+
+function disposeAUGrid() {
+  if (gridObserver) {
+    scene.onBeforeRenderObservable.remove(gridObserver);
+    gridObserver = null;
+  }
+  if (auGridMinor) { auGridMinor.dispose(); auGridMinor = null; }
+  if (auGridMajor) { auGridMajor.dispose(); auGridMajor = null; }
+}
+
+function createAUGridInfinite(scene, camera, {
+  plane = "XY",
+  offset = 0,
+  minorAlpha = 0.012,
+  majorAlpha = 0.025,
+  renderingGroupId = 0,
+  minHalfSizeAU = 12,
+  maxHalfSizeAU = 80,
+  majorEvery = 5
+} = {}) {
+  disposeAUGrid();
+
+  const AU_SCENE = AU * SCALE;
+
+  function pickStepAU(radiusAU) {
+    if (radiusAU < 6)   return 0.5;
+    if (radiusAU < 20)  return 1;
+    if (radiusAU < 60)  return 2;
+    if (radiusAU < 150) return 5;
+    if (radiusAU < 400) return 10;
+    return 20;
+  }
+
+  function pickHalfSizeAU(radiusAU) {
+    const hs = radiusAU * 1.2;
+    return Math.max(minHalfSizeAU, Math.min(maxHalfSizeAU, hs));
+  }
+
+  let curStepAU = -1;
+  let curHalfAU = -1;
+  let curStepScene = 1;
+
+  function buildGrid(stepAU, halfSizeAU) {
+    if (auGridMinor) { auGridMinor.dispose(); auGridMinor = null; }
+    if (auGridMajor) { auGridMajor.dispose(); auGridMajor = null; }
+
+    curStepAU = stepAU;
+    curHalfAU = halfSizeAU;
+
+    const extent = halfSizeAU * AU_SCENE;
+    const step = stepAU * AU_SCENE;
+    curStepScene = step;
+
+    const minorLines = [];
+    const majorLines = [];
+    const N = Math.floor(extent / step);
+
+    function addLine(a, b, isMajor) {
+      (isMajor ? majorLines : minorLines).push([a, b]);
+    }
+
+    for (let k = -N; k <= N; k++) {
+      const pos = k * step;
+      const isMajor = (k % majorEvery === 0);
+
+      if (plane === "XY") {
+        addLine(new BABYLON.Vector3(-extent, pos, offset), new BABYLON.Vector3( extent, pos, offset), isMajor);
+        addLine(new BABYLON.Vector3(pos, -extent, offset), new BABYLON.Vector3(pos,  extent, offset), isMajor);
+      } else {
+        addLine(new BABYLON.Vector3(-extent, offset, pos), new BABYLON.Vector3( extent, offset, pos), isMajor);
+        addLine(new BABYLON.Vector3(pos, offset, -extent), new BABYLON.Vector3(pos, offset,  extent), isMajor);
+      }
+    }
+
+    if (minorLines.length) {
+      auGridMinor = BABYLON.MeshBuilder.CreateLineSystem("auGridMinor", { lines: minorLines }, scene);
+      auGridMinor.color = new BABYLON.Color3(0.30, 0.30, 0.30);
+      auGridMinor.alpha = minorAlpha;
+      auGridMinor.isPickable = false;
+      auGridMinor.renderingGroupId = renderingGroupId;
+      auGridMinor.alwaysSelectAsActiveMesh = true;
+    }
+
+    if (majorLines.length) {
+      auGridMajor = BABYLON.MeshBuilder.CreateLineSystem("auGridMajor", { lines: majorLines }, scene);
+      auGridMajor.color = new BABYLON.Color3(0.45, 0.45, 0.45);
+      auGridMajor.alpha = majorAlpha;
+      auGridMajor.isPickable = false;
+      auGridMajor.renderingGroupId = renderingGroupId;
+      auGridMajor.alwaysSelectAsActiveMesh = true;
+    }
+  }
+
+  const radiusAU0 = (camera?.radius ?? 100) / AU_SCENE;
+  buildGrid(pickStepAU(radiusAU0), pickHalfSizeAU(radiusAU0));
+
+gridObserver = scene.onBeforeRenderObservable.add(() => {
+  if (!isAUGridVisible) return;
+
+    const rScene = camera?.radius ?? 100;
+    const rAU = rScene / AU_SCENE;
+    const wantedStepAU = pickStepAU(rAU);
+    const wantedHalfAU = pickHalfSizeAU(rAU);
+
+    if (wantedStepAU !== curStepAU || Math.abs(wantedHalfAU - curHalfAU) > 1e-9) {
+      buildGrid(wantedStepAU, wantedHalfAU);
+    }
+
+    const center =
+      (camera && camera.target) ? camera.target :
+      (camera && camera.position) ? camera.position :
+      BABYLON.Vector3.Zero();
+
+    const snap = curStepScene;
+    const cx = Math.round(center.x / snap) * snap;
+    const cy = Math.round(center.y / snap) * snap;
+    const cz = (plane === "XY") ? offset : Math.round(center.z / snap) * snap;
+
+    if (auGridMinor) auGridMinor.position.set(cx, cy, cz);
+    if (auGridMajor) auGridMajor.position.set(cx, cy, cz);
+  });
+}
+
+createAUGridInfinite(scene, camera, {
+  plane: "XY",
+  offset: 0,
+  minorAlpha: 0.010,
+  majorAlpha: 0.020,
+  minHalfSizeAU: 12,
+  maxHalfSizeAU: 100,
+  majorEvery: 5,
+  renderingGroupId: 0
+});
+
+const toggleGridBtn = document.getElementById("toggleGridBtn");
+
+function setAUGridVisible(on) {
+  isAUGridVisible = !!on;
+
+  if (auGridMinor) auGridMinor.setEnabled(isAUGridVisible);
+  if (auGridMajor) auGridMajor.setEnabled(isAUGridVisible);
+
+  if (toggleGridBtn) {
+    toggleGridBtn.textContent = isAUGridVisible ? "Hide Grid" : "Show Grid";
+  }
+}
+
+setAUGridVisible(true);
+
+toggleGridBtn?.addEventListener("click", () => {
+  setAUGridVisible(!isAUGridVisible);
+});
 
 const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui");
 
@@ -1149,7 +1311,13 @@ drawPlanetOrbit(scene, earthEl, 1200, planetColors.Earth);
   sun.material = sunMat;
   const glow = new BABYLON.GlowLayer("glow", scene);
   glow.referenceMeshToUseItsOwnMaterial(sun);
-  glow.intensity = 1.2;
+  glow.intensity = 0.05;
+
+scene.onBeforeRenderObservable.add(() => {
+  const r = camera.radius;
+  const t = Math.min(1, Math.max(0, (r - 50) / 400));
+  glow.intensity = 0.08 * (1 - 0.9 * t);
+});
 
 
 //STAR FIELD
@@ -1312,7 +1480,6 @@ function drawOrbit(scene, segments = 800) {
   -0.00387641697
 );
 
-  let cometMesh = null;
   const comet = BABYLON.MeshBuilder.CreateSphere("comet", { diameter: 0.2 }, scene);
   cometMesh = comet;
   cometMesh.position = cometPos;
@@ -2312,11 +2479,11 @@ function createTailParticle(timeNowJD) {
   const cs = cometStateAtJD(timeNowJD);
   const cometPos_scene = cs.r_scene;
   const cometVel_scene = cs.v_scene_per_s;
-const beta = generateBeta();
 
-const v_scene = cometVel_scene.clone();
-const r0_scene = cometPos_scene.clone();
+  const beta = generateBeta();
+  const v_scene = cometVel_scene.clone();
 
+  const r0_scene = cometPos_scene.clone();
   const lifeSeconds = (baseLifetime / velocityScale) * SECONDS_PER_DAY;
 
   if (rawParticles) {
@@ -2658,6 +2825,10 @@ rawParticles.update(
     document.getElementById("pauseBtn")?.click();
   }
 
+  function toggleAUGrid() {
+    setAUGridVisible(!isAUGridVisible);
+  }
+
   document.addEventListener('keydown', (e) => {
     if (isTypingTarget(e.target)) return;
 
@@ -2712,6 +2883,11 @@ rawParticles.update(
         } else {
           lockCameraToEarth();
         }
+        return;
+
+      case 'g': case 'G':
+        e.preventDefault();
+        toggleAUGrid();
         return;
 
     }
