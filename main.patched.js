@@ -288,10 +288,22 @@ function j2000ToSceneUnits(x, y, z, unit, AU, SCALE) {
 
 
   const camera = new BABYLON.ArcRotateCamera("orbitCamera", Math.PI / 2, Math.PI / 3, 100, BABYLON.Vector3.Zero(), scene);
+
+  camera.allowUpsideDown = false;
+  const eps = 0.01;
+  camera.lowerBetaLimit = eps;
+  camera.upperBetaLimit = Math.PI - eps;
+  camera.upVector = new BABYLON.Vector3(0, 0, 1);
+
   camera.maxZ = 1e9;
   camera.minZ = 0.1;
   camera.attachControl(canvas, true);
   camera.wheelDeltaPercentage = 0.005;
+
+  camera.alpha = Math.PI / 2;
+  camera.beta  = Math.PI / 2;
+  camera.radius = 120;
+  camera.setTarget(BABYLON.Vector3.Zero());
 
   const camXYZInput  = document.getElementById("camXYZInput");
   const camUnitSelect = document.getElementById("camUnitSelect");
@@ -802,18 +814,9 @@ gridObserver = scene.onBeforeRenderObservable.add(() => {
       buildGrid(wantedStepAU, wantedHalfAU);
     }
 
-    const center =
-      (camera && camera.target) ? camera.target :
-      (camera && camera.position) ? camera.position :
-      BABYLON.Vector3.Zero();
+if (auGridMinor) auGridMinor.position.set(0, 0, offset);
+if (auGridMajor) auGridMajor.position.set(0, 0, offset);
 
-    const snap = curStepScene;
-    const cx = Math.round(center.x / snap) * snap;
-    const cy = Math.round(center.y / snap) * snap;
-    const cz = (plane === "XY") ? offset : Math.round(center.z / snap) * snap;
-
-    if (auGridMinor) auGridMinor.position.set(cx, cy, cz);
-    if (auGridMajor) auGridMajor.position.set(cx, cy, cz);
   });
 }
 
