@@ -24,10 +24,7 @@ This README documents the architecture, physics, UI, and how to run/extend the p
    - [Presets](#presets)
 7. [Performance tips](#performance-tips)
 8. [Validation & sanity checks](#validation--sanity-checks)
-9. [Extending the simulator](#extending-the-simulator)
-10. [Troubleshooting](#troubleshooting)
-11. [Project structure](#project-structure)
-12. [License & credits](#license--credits)
+9. [License & credits](#license--credits)
 
 ---
 
@@ -66,7 +63,7 @@ A small badge at top-right shows the active mode:
   - When paused: scrub the timeline and click **Update Position** to jump
 
 ### Dust + visuals
-- Dust grains modeled with per-particle **β** (radiation pressure ratio), affecting the effective solar gravity \( \mu_\text{eff} = \mu_\odot(1-\beta)\).
+- Dust grains modeled with per-particle **β** (radiation pressure ratio), affecting the effective solar gravity.
 - Interactive **β gradation curve** editor (spline-like control points) to shape the β distribution.
 - Particle color visualization modes:
   - none / white
@@ -102,7 +99,7 @@ A small badge at top-right shows the active mode:
    From the orbital elements, the perihelion state is built in orbital plane coordinates (PQW), rotated into inertial IJK, then propagated to the current JD using **universal variables**.
 
 5. **Particles**  
-   Each frame emits particles based on an activity law \(Q(r_h)\) (scaled by cumulative exposure fading). GPU or CPU path updates particle states and draws them.
+   Each frame emits particles based on an activity law (scaled by cumulative exposure fading). GPU or CPU path updates particle states and draws them.
 
 ---
 
@@ -137,54 +134,16 @@ Derived:
 - Mean anomaly is advanced with \(n=\sqrt{\mu/a^3}\) and Kepler’s equation is solved via Newton iterations.
 - No perturbations: visually plausible orbits, not precision ephemerides.
 
-### Comet propagation
-**Inputs**: `e, q(AU), i, Ω, ω, T(JD)`.
-
-- Convert \(q\) to meters, compute \(a = q/(1-e)\) (hyperbolic cases are handled in orbit drawing; propagation uses universal variables).
-- Perihelion state in PQW:
-  - \( \mathbf{r}_0 = (q,0,0)\)
-  - \( \mathbf{v}_0 = (0,\sqrt{\mu(1+e)/q},0)\)
-- Rotate PQW → IJK
-- Propagate by \( dt = (JD - T)\cdot 86400\) with **universal variables + Stumpff functions**.
-
-Stumpff functions:
-- \(C(z)\) and \(S(z)\), with series expansion for small \(|z|\).
-
-Output:
-- comet position `r_scene = r_m * SCALE`
-- comet velocity `v_scene_per_s = v_mps * SCALE`
-- heliocentric distance `rh_AU = |r| / AU`
-
 ### Activity law & fading
 Emission rate is driven by:
 - **Activity law**:
-  \[
-    Q(r_h)=k \cdot \frac{1}{r_h^n}
-  \]
 - **Cumulative exposure fading**:
-  - Exposure integrates roughly \( \Delta t / r_h^2\) while the comet is within `ACTIVE_R_AU` (default 3 AU).
+  - Exposure integrates roughly, while the comet is within `ACTIVE_R_AU` (default 3 AU).
   - `ageFactor = 2^{-\text{exposure}/\text{halfLife}}` where halfLife is `activityHalfLifeInput` in “exposure-days” (e-days).
 
 Displayed on HUD:
 - `Q: …`
 - `decay: …%`
-
-### Dust grains (β) and dynamics
-- **β** is sampled per particle.
-- Effective gravity:
-  \[
-  \mu_\text{eff}=\mu_\odot\max(0,1-\beta)
-  \]
-- **β sampling modes**:
-  - Primary: interactive **β gradation curve** (Catmull-Rom interpolation → discrete PDF/CDF → inverse CDF sampling).
-  - Fallback: simple \([β_\min, β_\max]\) sampling with optional skew (if enabled in code path).
-
-**Important note about ejection**  
-In the provided current JS, particles are seeded with:
-- \( \mathbf{r}_0 = \mathbf{r}_\text{comet}\)
-- \( \mathbf{v}_0 = \mathbf{v}_\text{comet}\)
-
-So the “tail” shape is currently dominated by β-modified solar gravity + activity timing, not an additional thermal ejection speed cone model. (If you re-introduce an ejection model, document it under “Extending”.)
 
 ### GPU vs CPU paths
 
@@ -193,8 +152,6 @@ So the “tail” shape is currently dominated by β-modified solar gravity + ac
   - `posLife[i] = (x,y,z, lifeSecondsRemaining)`
   - `velBeta[i] = (vx,vy,vz, beta)`
 - Compute shader integrates with velocity-Verlet (kick-drift-kick) and adaptive sub-stepping:
-  - steps = `clamp(ceil(dt/(0.1*tDyn)), 1, 8)`
-  - \(t_\text{dyn}\approx\sqrt{r^3/\mu_\text{eff}}\)
 - Rendering uses a WebGPU render pipeline drawing a camera-facing quad per particle (6 vertices per particle) with alpha blending.
 - GPU visual modes are implemented in WGSL:
   - β rainbow mapping
@@ -252,7 +209,7 @@ These tools are designed for qualitative diagnostics.
 **Left overlay**
 - Orbital elements: `e, q(AU), i, Ω, ω, T(JD)`
 - Activity:
-  - `n` and `k` in \(Q = k/r^n\)
+  - `n` and `k`
   - activity decay half-life (e-days)
 - Particles:
   - lifetime (days)
@@ -320,10 +277,10 @@ Coded into `loadComet(id)`:
    - Increase β range and observe broader, more strongly curved structures.
 
 2. **Activity scaling**
-   - Increase `n` and confirm that emission concentrates strongly near perihelion (smaller \(r_h\)).
+   - Increase `n` and confirm that emission concentrates strongly near perihelion.
 
 3. **Exposure fading**
-   - Reduce half-life and confirm tail weakens sooner after sustained time at small \(r_h\).
+   - Reduce half-life and confirm tail weakens sooner after sustained time.
 
 4. **Synchrones/syndynes**
    - Generate both at the same paused epoch:
@@ -338,13 +295,10 @@ Coded into `loadComet(id)`:
 ## Extending the simulator
 
 ### Add a new comet preset
-Edit the `comets` object inside `loadComet(id)` and add:
-```js
-"MyComet": {
-  e: 0.9,
-  q: 0.8,     // AU
-  i: 30,      // deg
-  omega: 45,  // Ω, deg
-  w: 120,     // ω, deg
-  T: 2460000  // JD
-}
+Edit the `comets` object inside `loadComet(id)`.
+
+## Credits
+Free for any use (including commercial). Credit is appreciated but not required.
+
+Credit:
+Miks Balodis (RTU Engineering Highschool student). Supervised by Mg. sc. comp. Gints Jasmonts and Prof. Andris Slavinskis.
