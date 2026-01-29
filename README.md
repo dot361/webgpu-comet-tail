@@ -24,7 +24,7 @@ This README documents the architecture, physics, UI, and how to run/extend the p
    - [Presets](#presets)
 7. [Performance tips](#performance-tips)
 8. [Validation & sanity checks](#validation--sanity-checks)
-9. [License & credits](#license--credits)
+9. [License](#license--credits)
 
 ---
 
